@@ -1,0 +1,76 @@
+"""Central settings, read from environment variables and .env."""
+from functools import lru_cache
+from pathlib import Path
+
+from dotenv import load_dotenv
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# Load .env into os.environ too, so LangSmith picks up its LANGSMITH_* variables.
+load_dotenv(ROOT / ".env")
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
+
+    # --- OpenAI ---
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4.1"
+    openai_mini_model: str = "gpt-4.1-mini"
+    embedding_model: str = "text-embedding-3-large"
+    embedding_dimensions: int = 3072
+    llm_temperature: float | None = 0
+
+    # --- Azure OpenAI (optional) ---
+    azure_openai_endpoint: str = ""
+    azure_openai_api_key: str = ""
+    azure_openai_api_version: str = "2024-10-21"
+    azure_openai_chat_deployment: str = ""
+    azure_openai_mini_deployment: str = ""
+    azure_openai_embedding_deployment: str = ""
+
+    # --- Azure AI Search ---
+    azure_search_endpoint: str = ""
+    azure_search_key: str = ""
+    azure_search_index: str = "claimpilot-policies"
+    semantic_config: str = "claimpilot-semantic"
+
+    # --- Workflow rules ---
+    hitl_payout_threshold: float = 10_000
+    fraud_review_threshold: float = 0.7
+    eval_threshold: float = 0.8
+    max_retries: int = 2
+    retrieval_top_k: int = 6
+    retrieval_candidates: int = 50
+    min_reranker_score: float = 1.5
+    context_char_budget: int = 24_000  # ~6k tokens
+
+    # --- MCP ---
+    claims_mcp_url: str = "http://localhost:8001/mcp"
+    policy_mcp_url: str = "http://localhost:8002/mcp"
+    fraud_mcp_url: str = "http://localhost:8003/mcp"
+
+    # --- Storage ---
+    data_dir: Path = ROOT / "data"
+    db_path: Path = ROOT / "data" / "claimpilot.db"
+    checkpoint_path: Path = ROOT / "data" / "checkpoints.db"
+    upload_dir: Path = ROOT / "data" / "uploads"
+
+    # --- UI ---
+    api_url: str = "http://localhost:8000"
+
+    @field_validator("llm_temperature", mode="before")
+    @classmethod
+    def _empty_temperature(cls, v):
+        return None if v in ("", "none", "None") else v
+
+    @property
+    def use_azure_openai(self) -> bool:
+        return bool(self.azure_openai_endpoint)
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

@@ -1,0 +1,38 @@
+x-app: &app
+  build: .
+  env_file: .env
+  volumes:
+    - ./data:/app/data
+  environment:
+    CLAIMS_MCP_URL: http://claims-mcp:8001/mcp
+    POLICY_MCP_URL: http://policy-mcp:8002/mcp
+    FRAUD_MCP_URL: http://fraud-mcp:8003/mcp
+    API_URL: http://api:8000
+
+services:
+  claims-mcp:
+    <<: *app
+    command: python -m mcp_servers.claims_server
+    ports: ["8001:8001"]
+
+  policy-mcp:
+    <<: *app
+    command: python -m mcp_servers.policy_server
+    ports: ["8002:8002"]
+
+  fraud-mcp:
+    <<: *app
+    command: python -m mcp_servers.fraud_server
+    ports: ["8003:8003"]
+
+  api:
+    <<: *app
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    depends_on: [claims-mcp, policy-mcp, fraud-mcp]
+
+  ui:
+    <<: *app
+    command: streamlit run ui/app.py --server.address 0.0.0.0 --server.port 8501
+    ports: ["8501:8501"]
+    depends_on: [api]

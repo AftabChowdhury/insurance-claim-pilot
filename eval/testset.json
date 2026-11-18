@@ -1,0 +1,17 @@
+[
+  {"question": "A pipe burst under the kitchen sink and flooded the floor. Is it covered?", "policy_type": "home", "expected_clauses": ["4.2"]},
+  {"question": "Water slowly leaked from the shower for months and rotted the subfloor", "policy_type": "home", "expected_clauses": ["7.1"]},
+  {"question": "Heavy rain caused water to come in through the basement walls", "policy_type": "home", "expected_clauses": ["7.3"]},
+  {"question": "Sewage backed up through the basement floor drain", "policy_type": "home", "expected_clauses": ["E-2", "7.3"]},
+  {"question": "Hail broke roof tiles during a storm", "policy_type": "home", "expected_clauses": ["4.3"]},
+  {"question": "What deductible applies to a water damage claim?", "policy_type": "home", "expected_clauses": ["5.2"]},
+  {"question": "Kitchen fire damaged cabinets and smoke stained the walls", "policy_type": "home", "expected_clauses": ["4.1"]},
+  {"question": "How long do I have to report a loss?", "policy_type": "home", "expected_clauses": ["8.1"]},
+  {"question": "Old roof shingles wore out and started leaking", "policy_type": "home", "expected_clauses": ["7.2"]},
+  {"question": "My car was stolen from the driveway overnight", "policy_type": "auto", "expected_clauses": ["3.1"]},
+  {"question": "How is a stolen vehicle valued for settlement?", "policy_type": "auto", "expected_clauses": ["5.1"]},
+  {"question": "Do I need a police report for a theft claim?", "policy_type": "auto", "expected_clauses": ["8.4"]},
+  {"question": "Car was stolen while the keys were left inside and it was unlocked", "policy_type": "auto", "expected_clauses": ["6.2"]},
+  {"question": "What is the comprehensive deductible?", "policy_type": "auto", "expected_clauses": ["5.2"]},
+  {"question": "Laptop stolen from inside the car", "policy_type": "auto", "expected_clauses": ["6.3"]}
+]
