@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     admin_token_ttl_minutes: int = 480
     policy_max_files: int = 20
     policy_max_mb: int = 25
+    policy_auto_index: bool = True     # index uploads automatically + resync on API start
 
     # --- Policy extraction (images, scanned pages, .doc) ---
     image_describe: bool = True        # describe figures with the vision model (chat deployment)
@@ -74,6 +75,13 @@ class Settings(BaseSettings):
     scan_ocr: bool = True              # OCR scanned PDF pages with the vision model
     vision_concurrency: int = 4        # parallel vision calls per document
     libreoffice_path: str = "soffice"  # converter for .doc -> .docx
+
+    # --- Chunking (tokens, one config for all formats – see PLAN.md §5) ---
+    chunk_target_tokens: int = 450     # size of parts when a long clause is split
+    chunk_max_tokens: int = 700        # clauses above this are split
+    chunk_overlap_tokens: int = 60     # overlap between parts of the same clause only
+    chunk_min_tokens: int = 40         # smaller last parts are merged into the previous part
+    embed_batch_size: int = 64         # texts per embedding request
 
     # --- UI ---
     api_url: str = "http://localhost:8000"

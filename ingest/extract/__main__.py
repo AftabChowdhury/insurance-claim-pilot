@@ -7,7 +7,7 @@ Usage:
     uv run python -m ingest.extract policy.pdf --blocks                # print blocks instead of markdown
 
 Output (figures, figures.json cache, extracted.json) goes to data/policy_uploads/<doc_id>/ for --doc-id,
-otherwise to data/policy_uploads/_preview/<file stem>/ (or --out).
+otherwise to data/policy_uploads/_preview/<file name with . -> _>/ (or --out).
 """
 import argparse
 import asyncio
@@ -37,9 +37,9 @@ def main() -> None:
         record = db.get_policy_doc(args.doc_id)
         if not record:
             sys.exit(f"Unknown doc_id {args.doc_id}")
-        path, work_dir = Path(record["stored_path"]), s.policy_upload_dir / args.doc_id
+        path, work_dir = db.policy_doc_path(record), s.policy_upload_dir / args.doc_id
     elif args.file:
-        path, work_dir = args.file, s.policy_upload_dir / "_preview" / args.file.stem
+        path, work_dir = args.file, s.policy_upload_dir / "_preview" / args.file.name.replace(".", "_")
     else:
         ap.error("give a file or --doc-id")
     work_dir = args.out or work_dir

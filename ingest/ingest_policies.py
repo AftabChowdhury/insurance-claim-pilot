@@ -1,147 +1,86 @@
-"""Load policy documents into Azure AI Search with hybrid + semantic configuration.
+"""Index the built-in policies in data/policies/ into Azure AI Search, with the same pipeline as admin uploads.
 
 Usage:
-    uv run python -m ingest.ingest_policies            # create index if missing, upload chunks
-    uv run python -m ingest.ingest_policies --recreate # drop and rebuild the index
-    uv run python -m ingest.ingest_policies --dry-run  # only print the chunks
+    uv run python -m ingest.ingest_policies            # create/update index, (re)index every file
+    uv run python -m ingest.ingest_policies --recreate # drop and rebuild the index; uploads are re-indexed after
+    uv run python -m ingest.ingest_policies --dry-run  # only print the chunks (no vision, no upload)
 
-Policy files live in data/policies/ (.md or .pdf). Structure expected:
+Files: .md, .pdf, .docx, .doc in data/policies/. Structure expected (see ingest/structure.py for the general rules):
     ## Section 4 – Covered Perils          -> section (parent)
     ### 4.2 Sudden and accidental water...  -> clause (chunk); ID = "4.2"
-Front matter "policy_type: home|auto" (or a filename starting with home_/auto_) sets the policy type.
+Front matter "policy_type: home|auto" (or a filename starting with home/auto) sets the policy type.
+Each file gets doc_id "builtin-<file name>"; work files go to data/policy_uploads/_builtin/.
 """
 import argparse
+import asyncio
+import logging
 import re
+import sys
 from pathlib import Path
 
-from azure.core.credentials import AzureKeyCredential
-from azure.core.exceptions import ResourceNotFoundError
-from azure.search.documents import SearchClient
-from azure.search.documents.indexes import SearchIndexClient
-from azure.search.documents.indexes.models import (HnswAlgorithmConfiguration, SearchableField, SearchField,
-                                                   SearchFieldDataType, SearchIndex, SemanticConfiguration,
-                                                   SemanticField, SemanticPrioritizedFields, SemanticSearch,
-                                                   SimpleField, VectorSearch, VectorSearchProfile)
-
+from core import db
 from core.config import get_settings
-from core.llm import embedder
-
-CLAUSE_RE = re.compile(r"^###\s+([A-Z]?-?\d+(?:\.\d+)?)\s+(.*)$")
-
-
-def load_markdown(path: Path) -> str:
-    if path.suffix.lower() == ".pdf":
-        import pymupdf4llm
-        return pymupdf4llm.to_markdown(str(path))
-    return path.read_text(encoding="utf-8")
+from ingest.chunking import chunk_document
+from ingest.extract import SUPPORTED_EXTENSIONS, extract
+from ingest.indexer import delete_legacy_chunks, ensure_index
+from ingest.pipeline import documents_to_index, index_policy_file, process_policy_doc
 
 
-def parse_policy(path: Path) -> list[dict]:
-    text = load_markdown(path)
-    policy_type = "home" if path.stem.startswith("home") else "auto" if path.stem.startswith("auto") else "general"
-    m = re.search(r"^policy_type:\s*(\w+)", text, re.MULTILINE)
-    if m:
-        policy_type = m.group(1)
-
-    chunks, section, section_lines, current = [], "", [], None
-    section_chunks: list[dict] = []
-
-    def close_clause():
-        nonlocal current
-        if current:
-            current["content"] = "\n".join(current.pop("_lines")).strip()
-            chunks.append(current)
-            section_chunks.append(current)
-            current = None
-
-    def close_section():
-        close_clause()
-        parent = "\n".join(section_lines).strip()
-        for c in section_chunks:
-            c["parent_content"] = parent[:6000]
-        section_chunks.clear()
-
-    for line in text.splitlines():
-        if line.startswith("## "):
-            close_section()
-            section, section_lines = line[3:].strip(), [line]
-            continue
-        section_lines.append(line)
-        cm = CLAUSE_RE.match(line)
-        if cm:
-            close_clause()
-            cid, title = cm.groups()
-            current = {
-                "id": f"{policy_type}-{cid}".replace(".", "_"),
-                "clause_id": cid, "title": f"{cid} {title.strip()}", "section": section,
-                "source": path.name, "policy_type": policy_type, "_lines": [line],
-            }
-        elif current is not None:
-            current["_lines"].append(line)
-    close_section()
-    return chunks
-
-
-def build_index(name: str, dims: int, semantic_name: str) -> SearchIndex:
-    fields = [
-        SimpleField(name="id", type=SearchFieldDataType.String, key=True),
-        SearchableField(name="clause_id", type=SearchFieldDataType.String, filterable=True),
-        SearchableField(name="title", type=SearchFieldDataType.String),
-        SearchableField(name="section", type=SearchFieldDataType.String, filterable=True),
-        SearchableField(name="content", type=SearchFieldDataType.String, analyzer_name="en.microsoft"),
-        SimpleField(name="parent_content", type=SearchFieldDataType.String),
-        SimpleField(name="source", type=SearchFieldDataType.String, filterable=True),
-        SimpleField(name="policy_type", type=SearchFieldDataType.String, filterable=True, facetable=True),
-        SearchField(name="content_vector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                    searchable=True, vector_search_dimensions=dims, vector_search_profile_name="hnsw-profile"),
-    ]
-    vector_search = VectorSearch(
-        algorithms=[HnswAlgorithmConfiguration(name="hnsw")],
-        profiles=[VectorSearchProfile(name="hnsw-profile", algorithm_configuration_name="hnsw")],
-    )
-    semantic = SemanticSearch(configurations=[SemanticConfiguration(
-        name=semantic_name,
-        prioritized_fields=SemanticPrioritizedFields(
-            title_field=SemanticField(field_name="title"),
-            content_fields=[SemanticField(field_name="content")],
-            keywords_fields=[SemanticField(field_name="clause_id"), SemanticField(field_name="section")],
-        ),
-    )])
-    return SearchIndex(name=name, fields=fields, vector_search=vector_search, semantic_search=semantic)
+def builtin_doc_id(path: Path) -> str:
+    return "builtin-" + re.sub(r"[^A-Za-z0-9_-]", "_", path.stem)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--recreate", action="store_true")
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--recreate", action="store_true", help="delete and rebuild the index first")
+    ap.add_argument("--dry-run", action="store_true", help="print chunks only")
     args = ap.parse_args()
+    sys.stdout.reconfigure(encoding="utf-8")
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    for noisy in ("httpx", "azure.core.pipeline.policies.http_logging_policy"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     s = get_settings()
 
-    files = sorted(p for p in (s.data_dir / "policies").glob("*") if p.suffix.lower() in (".md", ".pdf"))
-    chunks = [c for f in files for c in parse_policy(f)]
-    print(f"Parsed {len(chunks)} clauses from {len(files)} file(s)")
-    for c in chunks:
-        print(f"  [{c['policy_type']}] {c['title']}  ({len(c['content'])} chars)")
+    files = sorted(p for p in (s.data_dir / "policies").glob("*") if p.suffix.lower() in SUPPORTED_EXTENSIONS)
+    work_root = s.policy_upload_dir / "_builtin"
+
     if args.dry_run:
+        total = 0
+        for f in files:
+            work_dir = work_root / f.name.replace(".", "_")
+            work_dir.mkdir(parents=True, exist_ok=True)
+            chunks = chunk_document(extract(f, work_dir), builtin_doc_id(f))
+            total += len(chunks)
+            for c in chunks:
+                print(f"  [{c['policy_type']}] {c['clause_id']:6} {c['chunk_type']:6} {c['tokens']:4} tok  "
+                      f"{c['title']}")
+        print(f"{total} chunks from {len(files)} file(s) (dry run, nothing uploaded)")
         return
 
-    cred = AzureKeyCredential(s.azure_search_key)
-    index_client = SearchIndexClient(s.azure_search_endpoint, cred)
-    if args.recreate:
-        try:
-            index_client.delete_index(s.azure_search_index)
-            print(f"Deleted index {s.azure_search_index}")
-        except ResourceNotFoundError:
-            pass
-    index_client.create_or_update_index(build_index(s.azure_search_index, s.embedding_dimensions, s.semantic_config))
+    ensure_index(recreate=args.recreate)
     print(f"Index {s.azure_search_index} ready (hybrid + semantic config '{s.semantic_config}')")
+    if not args.recreate and (n := delete_legacy_chunks()):
+        print(f"Removed {n} chunks written by the old ingest")
 
-    vectors = embedder().embed_documents([f"{c['title']}\n{c['content']}" for c in chunks])
-    for c, v in zip(chunks, vectors):
-        c["content_vector"] = v
-    result = SearchClient(s.azure_search_endpoint, s.azure_search_index, cred).upload_documents(chunks)
-    ok = sum(1 for r in result if r.succeeded)
-    print(f"Uploaded {ok}/{len(chunks)} chunks")
+    total = 0
+    for f in files:
+        result = asyncio.run(index_policy_file(f, builtin_doc_id(f), work_root / f.name.replace(".", "_"),
+                                               reextract=True))
+        total += result["chunks"]
+        print(f"  {f.name}: {result['chunks']} chunks [{result['policy_type']}], "
+              f"stale removed={result['deleted_stale']}")
+    print(f"Uploaded {total} chunks from {len(files)} file(s)")
+
+    # bring admin-uploaded documents back in sync (needed after --recreate; a no-op otherwise)
+    db.init_db()
+    todo = documents_to_index(include_failed=False)
+    for doc_id, reason in todo:
+        try:
+            r = asyncio.run(process_policy_doc(doc_id, actor="cli"))
+            if r:
+                print(f"  upload {doc_id} ({reason}): {r['chunks']} chunks")
+        except Exception as e:  # noqa: BLE001 - report and continue
+            print(f"  upload {doc_id} ({reason}) FAILED: {e}")
 
 
 if __name__ == "__main__":

@@ -67,10 +67,12 @@ def mark_decorative(blocks: list[Block], min_px: int) -> None:
 
 async def extract_document(path: Path, work_dir: Path, describe: bool | None = None) -> ExtractedDocument:
     """Extract, describe figures / OCR scanned pages with the vision model, save work_dir/extracted.json."""
+    import asyncio
+
     from ingest.figures import describe_figures
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    doc = extract(path, work_dir)
+    doc = await asyncio.to_thread(extract, path, work_dir)  # CPU-bound: keep the event loop free
     await describe_figures(doc, work_dir / "figures.json", enabled=describe)
     doc.save(work_dir / "extracted.json")
     return doc

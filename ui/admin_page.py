@@ -1,9 +1,18 @@
-"""Admin Panel: static login, upload policy documents (.pdf/.doc/.docx), list and delete them."""
+"""Admin Panel: static login, upload policy documents (.pdf/.doc/.docx), indexing status, re-index, chunk preview, delete."""
+from pathlib import Path
+
 import streamlit as st
 
 from common import api
 
 ALLOWED_TYPES = ["pdf", "doc", "docx"]
+POLICY_TYPES = {"Detect from document": "", "Home": "home", "Auto": "auto", "General": "general"}
+ROOT = Path(__file__).resolve().parent.parent
+STATUS_BADGE = {
+    "uploaded": ":gray-badge[uploaded]", "queued": ":blue-badge[queued]",
+    "processing": ":orange-badge[processing]", "indexed": ":green-badge[indexed]", "failed": ":red-badge[failed]",
+}
+ACTIVE = ("queued", "processing")
 
 
 def logout(message: str | None = None) -> None:
@@ -66,8 +75,10 @@ if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
 files = st.file_uploader("PDF or Word (.doc, .docx) – you can select several files", type=ALLOWED_TYPES,
                          accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
+policy_label = st.selectbox("Policy type", list(POLICY_TYPES), help="Applies to all selected files. "
+                            "'Detect' uses front matter or the file name (home…, auto…), else 'general'.")
 if st.button("Upload", type="primary", disabled=not files):
-    res = admin_api("POST", "/admin/policies",
+    res = admin_api("POST", "/admin/policies", data={"policy_type": POLICY_TYPES[policy_label]},
                     files=[("files", (f.name, f.getvalue(), f.type or "application/octet-stream")) for f in files])
     if res:
         st.session_state.upload_results = res
@@ -75,33 +86,80 @@ if st.button("Upload", type="primary", disabled=not files):
         st.rerun()
 
 for r in st.session_state.pop("upload_results", []):
-    if r["status"] == "uploaded":
-        st.success(f"Uploaded **{r['filename']}**")
+    if r["status"] == "queued":
+        st.success(f"Uploaded **{r['filename']}** – indexing started in the background")
+    elif r["status"] == "uploaded":
+        st.success(f"Uploaded **{r['filename']}** (automatic indexing is off – use Re-index)")
     else:
         st.error(f"Rejected **{r['filename']}**: {r['error']}")
 
 st.divider()
 
+
 # ---------------------------------------------------------------------------
-# Documents list
+# Documents list (refreshes itself while documents are being indexed)
 # ---------------------------------------------------------------------------
-head_l, head_r = st.columns([6, 1])
-head_l.subheader("Uploaded documents")
-if head_r.button("Refresh", use_container_width=True):
-    st.rerun()
+def status_cell(d: dict) -> str:
+    badge = STATUS_BADGE.get(d["status"], d["status"])
+    if d["status"] == "processing" and d.get("stage"):
+        badge += f" {d['stage'].replace('_', ' ')}…"
+    if d["status"] == "indexed" and d.get("chunk_count") is not None:
+        badge += f" {d['chunk_count']} chunks"
+    return badge
+
+
+def documents_list(was_active: bool) -> None:
+    docs = admin_api("GET", "/admin/policies") or []
+    active = any(d["status"] in ACTIVE for d in docs)
+    if was_active and not active:
+        st.rerun(scope="app")  # indexing finished: a full rerun stops the auto-refresh
+    head_l, head_m, head_r = st.columns([5, 1, 1])
+    head_l.subheader("Uploaded documents")
+    if head_m.button("Refresh", use_container_width=True):
+        st.rerun(scope="app")
+    if head_r.button("Resync", use_container_width=True,
+                     help="Index everything that is not in sync: new, failed, outdated or missing documents"):
+        r = admin_api("POST", "/admin/policies/resync")
+        if r is not None:
+            st.toast(f"Queued {len(r['queued'])} document(s)" if r["queued"] else "Everything is in sync")
+            st.rerun(scope="app")
+    if not docs:
+        st.info("No policy documents uploaded yet.")
+        return
+    if active:
+        st.caption("Indexing in progress – this list refreshes automatically.")
+
+    cols = [4, 1, 1, 3, 2, 1, 1]
+    hdr = st.columns(cols)
+    for c, label in zip(hdr, ["File", "Type", "Policy", "Index status", "Uploaded at (UTC)", "", ""]):
+        if label:
+            c.markdown(f"**{label}**")
+    for d in docs:
+        row = st.columns(cols, vertical_alignment="center")
+        row[0].write(f"{d['filename']}  \n:gray[{human_size(d['size_bytes'])} · {d['uploaded_by']}]")
+        row[1].write(d["file_type"].upper())
+        row[2].write(d.get("policy_type") or "auto-detect")
+        row[3].markdown(status_cell(d))
+        if d["status"] == "failed" and d.get("error"):
+            row[3].caption(d["error"][:200])
+        row[4].write(d["uploaded_at"].replace("T", " ").split("+")[0])
+        if row[5].button("🔄", key=f"idx_{d['id']}", help=f"Re-index {d['filename']}",
+                         disabled=d["status"] in ACTIVE):
+            admin_api("POST", f"/admin/policies/{d['id']}/index")
+            st.rerun(scope="app")
+        if row[6].button("🗑", key=f"del_{d['id']}", help=f"Delete {d['filename']}"):
+            st.session_state.confirm_delete = [d["id"]]
+            st.rerun(scope="app")
+
 
 docs = admin_api("GET", "/admin/policies") or []
-if not docs:
-    st.info("No policy documents uploaded yet.")
-    st.stop()
-
 by_id = {d["id"]: d for d in docs}
 confirm = st.session_state.get("confirm_delete")  # list of doc ids awaiting confirmation
 
 if confirm:
     names = ", ".join(by_id[i]["filename"] for i in confirm if i in by_id)
     with st.container(border=True):
-        st.warning(f"Delete {len(confirm)} document(s)? {names}")
+        st.warning(f"Delete {len(confirm)} document(s) and remove them from the search index? {names}")
         c1, c2, _ = st.columns([1, 1, 5])
         if c1.button("Yes, delete", type="primary"):
             deleted = 0
@@ -115,24 +173,37 @@ if confirm:
             st.session_state.pop("confirm_delete", None)
             st.rerun()
 
-cols = [4, 1, 1, 2, 3, 1]
-hdr = st.columns(cols)
-for c, label in zip(hdr, ["File", "Type", "Size", "Uploaded by", "Uploaded at (UTC)", ""]):
-    if label:
-        c.markdown(f"**{label}**")
-for d in docs:
-    row = st.columns(cols, vertical_alignment="center")
-    row[0].write(d["filename"])
-    row[1].write(d["file_type"].upper())
-    row[2].write(human_size(d["size_bytes"]))
-    row[3].write(d["uploaded_by"])
-    row[4].write(d["uploaded_at"].replace("T", " ").split("+")[0])
-    if row[5].button("🗑", key=f"del_{d['id']}", help=f"Delete {d['filename']}"):
-        st.session_state.confirm_delete = [d["id"]]
-        st.rerun()
+is_active = any(d["status"] in ACTIVE for d in docs)
+st.fragment(documents_list, run_every=3 if is_active else None)(is_active)
+
+if not docs:
+    st.stop()
 
 st.markdown("")
 selected = st.multiselect("Select documents to delete", list(by_id), format_func=lambda i: by_id[i]["filename"])
 if st.button("Delete selected", disabled=not selected):
     st.session_state.confirm_delete = selected
     st.rerun()
+
+# ---------------------------------------------------------------------------
+# Chunk preview
+# ---------------------------------------------------------------------------
+st.divider()
+st.subheader("Chunk preview")
+indexed = [i for i, d in by_id.items() if d["status"] == "indexed"]
+if not indexed:
+    st.caption("Chunks appear here once a document is indexed.")
+    st.stop()
+doc_id = st.selectbox("Document", indexed, format_func=lambda i: by_id[i]["filename"])
+chunks = admin_api("GET", f"/admin/policies/{doc_id}/chunks") or []
+counts = {t: sum(c["chunk_type"] == t for c in chunks) for t in ("text", "table", "figure")}
+st.caption(f"{len(chunks)} chunks · {counts['text']} text · {counts['table']} table · {counts['figure']} figure · "
+           f"policy type {chunks[0]['policy_type'] if chunks else '-'}")
+for c in chunks:
+    page = f" · p. {c['page']}" if c.get("page") else ""
+    with st.expander(f"[{c['clause_id']}] {c['title']} · {c['chunk_type']} · {c['tokens']} tokens{page}"):
+        for ref in c.get("image_refs") or []:
+            img = ROOT / ref
+            if img.is_file():
+                st.image(str(img), width=360)
+        st.markdown(c["content"])

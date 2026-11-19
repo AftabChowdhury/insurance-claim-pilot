@@ -29,7 +29,9 @@ for high-stakes claims.
 | Policy chat | **TODO** – no chat endpoint or UI yet; reuse `core/search.py` + `api/graph/retrieval.py` patterns and cite `clause_id`s |
 | Admin panel for policy upload | Implemented – Streamlit Admin page + `/admin/policies` (upload `.pdf`/`.doc`/`.docx`, list, delete) storing files in `data/policy_uploads/` |
 | Extraction of policy documents (`.pdf`/`.docx`/`.doc`/`.md`, images, workflow diagrams, scanned pages) | Implemented – `ingest/extract/` + `ingest/figures.py` (vision model = chat deployment); CLI `uv run python -m ingest.extract`; see `PLAN.md` |
-| Chunking / embedding / indexing of admin-uploaded policies | **TODO** (see `PLAN.md` §4, §6, §7) – uploads have status `uploaded`; only the CLI `ingest/ingest_policies.py` indexes (`data/policies/`, `.md`/`.pdf`) |
+| Chunking of policy documents | Implemented – `ingest/structure.py` + `ingest/chunking.py` (clause-based, token limits); CLI `uv run python -m ingest.chunking` |
+| Embedding / indexing of policies | Implemented – `ingest/indexer.py` + `ingest/pipeline.py`; built-in policies via `ingest/ingest_policies.py`; admin delete removes chunks |
+| Automatic indexing after admin upload + resync | Implemented – background worker `api/indexing.py` (queue, resync on API start), Admin page status / re-index / resync / chunk preview (`PLAN.md` §7) |
 | Authentication / admin vs. user roles | Partial – static admin login (`api/auth.py`, HMAC bearer token); claim endpoints are open |
 
 ## Tech stack
@@ -54,7 +56,8 @@ api/                FastAPI app
                     /claims/{id}/letter, /claims/{id}/audit, /loss-types, /graph, /health
   documents.py      Upload validation (types, 10 MB, max 10 files) + text extraction
   auth.py           Static admin login (POST /admin/login) + require_admin bearer-token dependency
-  admin.py          /admin/policies: upload (.pdf/.doc/.docx), list, delete policy documents
+  admin.py          /admin/policies: upload (.pdf/.doc/.docx), list, delete, resync, re-index, chunk preview
+  indexing.py       IndexWorker: background queue that indexes uploads; resync on startup
   files.py          safe_name() for uploaded file names
   runner.py         Background graph runs, status (running / awaiting_review / completed / failed)
   mcp_client.py     MCP tool calls with fallback
@@ -67,10 +70,14 @@ api/                FastAPI app
     human.py        interrupt() for adjuster review, close_claim
     prompts.py, schemas.py
 core/               Shared: config (pydantic-settings), llm clients, search, db, domain (loss types)
-ingest/             ingest_policies.py – parse policies into clause chunks and upload to Azure AI Search
+ingest/             ingest_policies.py – index data/policies/ with the shared pipeline (doc_id builtin-<stem>)
+  pipeline.py       extract → describe → chunk → embed → index; process_policy_doc(doc_id) for uploads
+  indexer.py        index schema, batched embedding with retry, upsert / delete chunks by doc_id
   extract/          policy file → ExtractedDocument (ordered blocks: heading/paragraph/list/table/figure);
                     pdf.py (pymupdf4llm layout), word.py (.docx walk, .doc via LibreOffice), markdown.py
   figures.py        vision model: figure descriptions (workflow steps), scanned-page OCR, figures.json cache
+  structure.py      blocks → sections/clauses (clause_id, parent_content, policy_type)
+  chunking.py       clause-based chunks with token limits, figure chunks → index-shaped dicts (+ CLI)
 mcp_servers/        claims_server (8001), policy_server (8002), fraud_server (8003)
 ui/app.py           Streamlit entrypoint (st.navigation): claims_page.py (submit claim, timeline,
                     adjuster review) and admin_page.py (login, policy upload/list/delete); common.py api()
@@ -110,6 +117,7 @@ uv sync                                              # install deps
 copy .env.example .env                               # fill OPENAI_API_KEY, AZURE_SEARCH_KEY
 uv run python -m ingest.ingest_policies --recreate   # (re)build search index from data/policies/
 uv run python -m ingest.ingest_policies --dry-run    # print chunks only
+uv run python -m ingest.pipeline --pending           # resync uploads without the API (--doc-id <id> / --all to force)
 .\run_all.ps1                                        # start 3 MCP servers + API + UI in separate windows
 .\stop_all.ps1                                       # stop them all and close their windows
 uv run uvicorn api.main:app --reload --port 8000     # API only (docs: /docs, graph: /graph)

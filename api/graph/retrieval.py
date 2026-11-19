@@ -75,7 +75,8 @@ async def build_context(state: ClaimState) -> dict:
         if used + len(block) > budget:
             break
         blocks.append(block)
-        clauses.append(c["clause_id"])
+        if c["clause_id"] not in clauses:  # a split clause can contribute several chunks
+            clauses.append(c["clause_id"])
         used += len(block)
     context = "\n\n---\n\n".join(blocks) if blocks else "(no relevant policy text found)"
     return {"context": context, "context_clauses": clauses,

@@ -23,6 +23,7 @@ from core.domain import LOSS_TYPES, policy_type_for
 from . import admin, auth
 from .documents import save_uploads
 from .graph.graph import build_graph
+from .indexing import IndexWorker, startup_resync
 from .models import ClaimCreated, ClaimView, ReviewDecision
 from .runner import Runner
 
@@ -36,9 +37,14 @@ async def lifespan(app: FastAPI):
     s.upload_dir.mkdir(parents=True, exist_ok=True)
     s.policy_upload_dir.mkdir(parents=True, exist_ok=True)
     db.init_db()
+    app.state.indexer = IndexWorker()
+    app.state.indexer.start()
+    resync = asyncio.create_task(startup_resync(app.state.indexer))
     async with AsyncSqliteSaver.from_conn_string(str(s.checkpoint_path)) as saver:
         app.state.runner = Runner(build_graph(checkpointer=saver))
         yield
+    resync.cancel()
+    await app.state.indexer.stop()
 
 
 app = FastAPI(title="ClaimPilot API", version="0.1.0", lifespan=lifespan,

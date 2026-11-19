@@ -43,6 +43,18 @@ CREATE TABLE IF NOT EXISTS policy_documents (
 );
 """
 
+# Indexing state of policy documents, added to existing databases by init_db().
+# status: uploaded -> queued -> processing -> indexed | failed ; stage: current step while processing
+POLICY_DOC_COLUMNS = {
+    "policy_type": "TEXT",       # admin's choice on upload (None = detect from file)
+    "stage": "TEXT",
+    "error": "TEXT",
+    "chunk_count": "INTEGER",
+    "figure_count": "INTEGER",
+    "chunker_version": "TEXT",   # chunk settings used for the indexed chunks (re-index when they change)
+    "indexed_at": "TEXT",
+}
+
 # Audit rows that are not about a claim (admin login, policy uploads) use this pseudo claim id.
 ADMIN_AUDIT_ID = "ADMIN"
 
@@ -75,6 +87,10 @@ def connect():
 def init_db() -> None:
     with connect() as c:
         c.executescript(SCHEMA)
+        existing = {r["name"] for r in c.execute("PRAGMA table_info(policy_documents)")}
+        for col, typ in POLICY_DOC_COLUMNS.items():
+            if col not in existing:
+                c.execute(f"ALTER TABLE policy_documents ADD COLUMN {col} {typ}")
         if c.execute("SELECT COUNT(*) FROM claims").fetchone()[0] == 0:
             for cid, pol, lt, amt, dt, desc, st, pay in SEED_CLAIMS:
                 c.execute(
@@ -166,9 +182,9 @@ def add_policy_doc(doc: dict) -> dict:
     with connect() as c:
         c.execute(
             "INSERT INTO policy_documents (id, filename, stored_path, file_type, size_bytes, sha256, status,"
-            " uploaded_by, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            " uploaded_by, uploaded_at, policy_type) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (doc["id"], doc["filename"], doc["stored_path"], doc["file_type"], doc["size_bytes"], doc["sha256"],
-             doc.get("status", "uploaded"), doc["uploaded_by"], now()),
+             doc.get("status", "uploaded"), doc["uploaded_by"], now(), doc.get("policy_type")),
         )
     return get_policy_doc(doc["id"])
 
@@ -188,6 +204,32 @@ def find_policy_doc_by_sha(sha256: str) -> dict | None:
 def list_policy_docs() -> list[dict]:
     with connect() as c:
         return [dict(r) for r in c.execute("SELECT * FROM policy_documents ORDER BY uploaded_at DESC, rowid DESC")]
+
+
+def policy_doc_path(doc: dict):
+    """The uploaded file of a policy document. stored_path is absolute and may come from another environment
+    (e.g. /app/data/... written inside Docker, with ./data mounted); fall back to the upload folder + name."""
+    from pathlib import Path, PurePosixPath, PureWindowsPath
+
+    stored = Path(doc["stored_path"])
+    if stored.is_file():
+        return stored
+    name = PureWindowsPath(doc["stored_path"]).name if "\\" in doc["stored_path"] else \
+        PurePosixPath(doc["stored_path"]).name
+    return get_settings().policy_upload_dir / name
+
+
+def update_policy_doc(doc_id: str, **fields) -> None:
+    """Update status and/or indexing columns, e.g. update_policy_doc(id, status="processing", stage="chunking")."""
+    allowed = {"status", *POLICY_DOC_COLUMNS}
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"unknown policy_documents columns: {unknown}")
+    if not fields:
+        return
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    with connect() as c:
+        c.execute(f"UPDATE policy_documents SET {sets} WHERE id = ?", (*fields.values(), doc_id))
 
 
 def delete_policy_doc(doc_id: str) -> None:

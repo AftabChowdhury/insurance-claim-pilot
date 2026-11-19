@@ -458,6 +458,7 @@ dependencies = [
     { name = "python-multipart" },
     { name = "requests" },
     { name = "streamlit" },
+    { name = "tiktoken" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -490,6 +491,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "requests", specifier = ">=2.32" },
     { name = "streamlit", specifier = ">=1.40" },
+    { name = "tiktoken", specifier = ">=0.7" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 provides-extras = ["pii"]
