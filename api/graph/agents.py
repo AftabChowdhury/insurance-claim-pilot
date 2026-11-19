@@ -99,7 +99,8 @@ async def fraud_agent(state: ClaimState) -> dict:
 async def writer_agent(state: ClaimState) -> dict:
     out: DecisionLetter = await structured(DecisionLetter).ainvoke(prompts.WRITER.format(
         claim_id=state["claim_id"], claim=json.dumps(state["claim"], indent=2),
-        coverage=json.dumps(state["coverage"], indent=2), context=state["context"]))
+        coverage=json.dumps(state["coverage"], indent=2),
+        context=state.get("public_context") or state["context"]))
     return {"letter": out.model_dump(),
             **event("writer_agent", f"Draft: {out.decision} · ${out.payout:,.0f} · {len(out.citations)} citation(s)",
                     decision=out.decision, payout=out.payout)}

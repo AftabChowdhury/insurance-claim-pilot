@@ -5,8 +5,7 @@ chunks and saved in **Azure AI Search**. The index supports hybrid search (BM25 
 the semantic ranker. The policy chat and the claim workflow (`api/graph/retrieval.py`) both read from this
 index and cite each chunk's `clause_id`.
 
-This feature builds on [DOCUMENT_UPLOAD.md](DOCUMENT_UPLOAD.md) (admin upload and file management). For the
-design reasoning, see [PLAN.md](../PLAN.md).
+This feature builds on [DOCUMENT_UPLOAD.md](DOCUMENT_UPLOAD.md) (admin upload and file management).
 
 ## Overview
 
@@ -222,7 +221,7 @@ the original markdown ingest produced.
 ### 2.2 Chunking rules (`ingest/chunking.py`)
 
 One token-based configuration applies to **all file formats**. The format only matters for extraction. Chunk
-sizes that differ by format would bias BM25, vector and semantic-ranker scores (see PLAN.md §5).
+sizes that differ by format would bias BM25, vector and semantic-ranker scores.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -272,6 +271,7 @@ number, or the clause listed first in the vision model's `referenced_clauses`.
   "page": 12,                           # PDF only
   "image_refs": ["data/policy_uploads/3f2a9c1b7e44/figures/<sha>.png"],  # relative to repo root
   "chunker_version": "1-t450-m700-o60-n40",
+  "confidential": false,                # admin flag / front matter `confidential: true`
   # not stored in the index:
   "embed_text": "home policy | Home Insurance | Section 4 – Covered Perils | 4.2 …\n\n<content>",
   "tokens": 312
@@ -322,6 +322,7 @@ documents are reported as outdated and re-indexed by the resync (see §4.3).
 | `page` | Int32 | retrievable | citation "p. 12" |
 | `image_refs` | Collection(String) | retrievable | figures to show in the UI |
 | `chunker_version` | String | filterable | find stale chunks |
+| `confidential` | Boolean | filterable, facetable | hidden from the policy chat ([POLICY_CHAT.md](POLICY_CHAT.md) §1) |
 
 The semantic configuration `SEMANTIC_CONFIG` (`claimpilot-semantic`) uses title = `title`, content =
 `content`, and keywords = `clause_id`, `section`.
@@ -391,6 +392,7 @@ uploaded → queued → processing (stage: extracting → describing_images → 
 | `POST /admin/policies/{doc_id}/index?reextract=true` | Re-index one document (optionally re-extract and re-describe) |
 | `GET /admin/policies/{doc_id}/chunks` | Chunk preview from `chunks.json` |
 | `DELETE /admin/policies/{doc_id}` | Delete the file, work folder, index chunks and DB row |
+| `PATCH /admin/policies/{doc_id}` | Set `confidential` (metadata-only update of the chunks; see [POLICY_CHAT.md](POLICY_CHAT.md) §1.2) |
 
 ---
 

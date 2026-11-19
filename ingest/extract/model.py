@@ -1,4 +1,4 @@
-"""Format-independent representation of an extracted document (PLAN.md §1.1).
+"""Format-independent representation of an extracted document (features/SAVE_IN_VECTOR_DB.md §1.1).
 
 Every extractor (PDF, DOCX, DOC, markdown) returns an ExtractedDocument whose blocks are in reading order.
 Chunking, figure linking and indexing only work on these blocks.
@@ -85,7 +85,7 @@ class ExtractedDocument:
 
 
 def render_figure(b: Block) -> str:
-    """Text that stands in for a figure in chunks (PLAN.md §3.2). Works with or without a vision result."""
+    """Text that stands in for a figure in chunks (features/SAVE_IN_VECTOR_DB.md §1.6). Works with or without a vision result."""
     f = b.figure or {}
     if b.source == "page_scan":
         return f"[Scanned page {b.page or ''} – not transcribed]"

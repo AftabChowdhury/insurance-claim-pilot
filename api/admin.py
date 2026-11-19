@@ -4,6 +4,9 @@ Files are stored in settings.policy_upload_dir as <doc_id>_<filename> and regist
 table. Every upload is queued for indexing automatically (api/indexing.py: extract -> chunk -> embed -> Azure
 AI Search); work files go to <policy_upload_dir>/<doc_id>/. Status: uploaded -> queued -> processing ->
 indexed | failed. Deleting a document also removes its chunks from the index.
+
+A document can be marked confidential (on upload or later with PATCH). Its chunks carry confidential=true in the
+index and are never returned to the policy chat; toggling the flag only updates the chunks' metadata.
 """
 import hashlib
 import json
@@ -13,16 +16,18 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 
 from core import db
 from core.config import get_settings
-from ingest.indexer import delete_doc_chunks
+from ingest.indexer import delete_doc_chunks, set_doc_confidential
 
 from .auth import require_admin
 from .files import safe_name
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/policies", tags=["admin"])
+chat_audit_router = APIRouter(prefix="/admin/chat", tags=["admin"])
 POLICY_TYPES = ("home", "auto", "general")
 
 # Allowed extensions and the magic bytes their content must start with.
@@ -55,10 +60,11 @@ def _check(name: str, data: bytes, max_bytes: int) -> str | None:
 
 @router.post("")
 async def upload_policies(request: Request, files: list[UploadFile] = File(...),
-                          policy_type: str | None = Form(None), user: str = Depends(require_admin)):
+                          policy_type: str | None = Form(None), confidential: bool = Form(False),
+                          user: str = Depends(require_admin)):
     """Upload one or more policy documents (.pdf, .doc, .docx). Valid files are saved even if others are rejected.
-    policy_type (home | auto | general) applies to all files; empty = detect from the file. Accepted files are
-    queued for indexing automatically."""
+    policy_type (home | auto | general) and confidential apply to all files; empty policy_type = detect from the
+    file. Accepted files are queued for indexing automatically."""
     s = get_settings()
     policy_type = (policy_type or "").strip().lower() or None
     if policy_type and policy_type not in POLICY_TYPES:
@@ -88,11 +94,13 @@ async def upload_policies(request: Request, files: list[UploadFile] = File(...),
         try:
             db.add_policy_doc({"id": doc_id, "filename": name, "stored_path": str(path),
                                "file_type": Path(name).suffix.lower().lstrip("."), "size_bytes": len(data),
-                               "sha256": sha, "uploaded_by": user, "policy_type": policy_type})
+                               "sha256": sha, "uploaded_by": user, "policy_type": policy_type,
+                               "confidential": confidential})
         except Exception:
             path.unlink(missing_ok=True)
             raise
-        db.add_audit(db.ADMIN_AUDIT_ID, user, "policy_uploaded", f"{doc_id} {name} ({len(data)} bytes)")
+        db.add_audit(db.ADMIN_AUDIT_ID, user, "policy_uploaded",
+                     f"{doc_id} {name} ({len(data)} bytes{', confidential' if confidential else ''})")
         status = "uploaded"
         if s.policy_auto_index:
             request.app.state.indexer.enqueue(doc_id, actor=user)
@@ -132,6 +140,33 @@ def reindex_policy(doc_id: str, request: Request, reextract: bool = False, user:
     return {"doc_id": doc_id, "queued": queued}
 
 
+class ConfidentialUpdate(BaseModel):
+    confidential: bool
+
+
+@router.patch("/{doc_id}")
+def set_confidential(doc_id: str, body: ConfidentialUpdate, user: str = Depends(require_admin)):
+    """Mark a document as confidential (hidden from the policy chat) or public again. Updates the DB row and the
+    chunks already in the index (metadata only, no re-embedding). A document that is still being indexed gets
+    the flag when the worker writes its chunks."""
+    doc = db.get_policy_doc(doc_id)
+    if not doc:
+        raise HTTPException(404, "Document not found")
+    old = bool(doc.get("confidential"))
+    db.update_policy_doc(doc_id, confidential=int(body.confidential))
+    chunks_updated, error = 0, None
+    if doc["status"] == "indexed":
+        try:
+            chunks_updated = set_doc_confidential(doc_id, body.confidential)
+        except Exception as e:  # noqa: BLE001 - DB is the source of truth; the next resync repairs the index
+            log.warning("Could not update the confidential flag of %s in the index: %s", doc_id, e)
+            error = f"Saved, but the search index could not be updated yet ({e}). Run Resync to repair."
+    db.add_audit(db.ADMIN_AUDIT_ID, user, "policy_confidentiality_changed",
+                 f"{doc_id} {doc['filename']}: confidential {old} -> {body.confidential}"
+                 f" ({chunks_updated} chunk(s) updated)")
+    return {"doc_id": doc_id, "confidential": body.confidential, "chunks_updated": chunks_updated, "error": error}
+
+
 @router.get("/{doc_id}/chunks")
 def policy_chunks(doc_id: str, _: str = Depends(require_admin)):
     """Chunks of the last indexing run (without vectors) for the preview in the Admin panel."""
@@ -165,3 +200,9 @@ def delete_policy(doc_id: str, user: str = Depends(require_admin)):
     db.add_audit(db.ADMIN_AUDIT_ID, user, "policy_deleted",
                  f"{doc_id} {doc['filename']} (index chunks removed: {removed_chunks})")
     return {"doc_id": doc_id, "deleted": True, "chunks_removed": removed_chunks}
+
+
+@chat_audit_router.get("/audit")
+def chat_audit(limit: int = 100, _: str = Depends(require_admin)):
+    """Restricted (confidential) and blocked policy-chat requests, newest first."""
+    return db.get_chat_audit(min(max(limit, 1), 500))

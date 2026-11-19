@@ -26,13 +26,14 @@ for high-stakes claims.
 | Claim submission + multi-agent decision | Implemented (`POST /claims`, LangGraph in `api/graph/`) |
 | Claim documents: PDF (text layer), `.docx`, `.txt`, `.md` | Implemented (`api/documents.py`) |
 | Claim documents: images and scanned PDFs | **TODO** – marked `ocr_pending`; needs OCR / vision model (Azure Document Intelligence or a multimodal LLM) |
-| Policy chat | **TODO** – no chat endpoint or UI yet; reuse `core/search.py` + `api/graph/retrieval.py` patterns and cite `clause_id`s |
-| Admin panel for policy upload | Implemented – Streamlit Admin page + `/admin/policies` (upload `.pdf`/`.doc`/`.docx`, list, delete) storing files in `data/policy_uploads/` |
-| Extraction of policy documents (`.pdf`/`.docx`/`.doc`/`.md`, images, workflow diagrams, scanned pages) | Implemented – `ingest/extract/` + `ingest/figures.py` (vision model = chat deployment); CLI `uv run python -m ingest.extract`; see `PLAN.md` |
+| Policy chat | Implemented – LangGraph in `api/chat/`, `/chat` + `/chat/stream`, Streamlit Policy Chat page; evaluator + retry/regenerate; see `features/POLICY_CHAT.md` |
+| Confidential policy documents | Implemented – Admin 🔒 flag (upload + `PATCH /admin/policies/{id}`), index field `confidential`; the chat never returns them (filter + post-filter + score-only probe + leak check); see `features/POLICY_CHAT.md` §1–2 |
+| Admin panel for policy upload | Implemented – Streamlit Admin page + `/admin/policies` (upload `.pdf`/`.doc`/`.docx`, list, delete, confidential toggle) storing files in `data/policy_uploads/` |
+| Extraction of policy documents (`.pdf`/`.docx`/`.doc`/`.md`, images, workflow diagrams, scanned pages) | Implemented – `ingest/extract/` + `ingest/figures.py` (vision model = chat deployment); CLI `uv run python -m ingest.extract`; see `features/SAVE_IN_VECTOR_DB.md` §1 |
 | Chunking of policy documents | Implemented – `ingest/structure.py` + `ingest/chunking.py` (clause-based, token limits); CLI `uv run python -m ingest.chunking` |
 | Embedding / indexing of policies | Implemented – `ingest/indexer.py` + `ingest/pipeline.py`; built-in policies via `ingest/ingest_policies.py`; admin delete removes chunks |
-| Automatic indexing after admin upload + resync | Implemented – background worker `api/indexing.py` (queue, resync on API start), Admin page status / re-index / resync / chunk preview (`PLAN.md` §7) |
-| Authentication / admin vs. user roles | Partial – static admin login (`api/auth.py`, HMAC bearer token); claim endpoints are open |
+| Automatic indexing after admin upload + resync | Implemented – background worker `api/indexing.py` (queue, resync on API start), Admin page status / re-index / resync / chunk preview (`features/SAVE_IN_VECTOR_DB.md` §4.3) |
+| Authentication / admin vs. user roles | Partial – static admin login (`api/auth.py`, HMAC bearer token); claim and chat endpoints are open (chat users always get `access="public"`) |
 
 ## Tech stack
 
@@ -56,7 +57,8 @@ api/                FastAPI app
                     /claims/{id}/letter, /claims/{id}/audit, /loss-types, /graph, /health
   documents.py      Upload validation (types, 10 MB, max 10 files) + text extraction
   auth.py           Static admin login (POST /admin/login) + require_admin bearer-token dependency
-  admin.py          /admin/policies: upload (.pdf/.doc/.docx), list, delete, resync, re-index, chunk preview
+  admin.py          /admin/policies: upload (.pdf/.doc/.docx), list, delete, resync, re-index, chunk preview,
+                    PATCH confidential flag; /admin/chat/audit (restricted / blocked chat requests)
   indexing.py       IndexWorker: background queue that indexes uploads; resync on startup
   files.py          safe_name() for uploaded file names
   runner.py         Background graph runs, status (running / awaiting_review / completed / failed)
@@ -69,7 +71,16 @@ api/                FastAPI app
     guardrails.py   input (injection, PII) and output policy checks
     human.py        interrupt() for adjuster review, close_claim
     prompts.py, schemas.py
-core/               Shared: config (pydantic-settings), llm clients, search, db, domain (loss types)
+  chat/             Policy-chat LangGraph (see features/POLICY_CHAT.md)
+    graph.py        guard_input → rewrite_query → [hybrid_search ∥ confidential_probe] → semantic_rank →
+                    build_context → access_check → answer_agent → evaluator_agent (↺ prepare_retry) →
+                    guard_output → respond
+    state.py        ChatState, turn_input() (per-turn reset; history persists per session thread)
+    agents.py       query, retrieval, access control, answer, evaluator, retry and responder nodes
+    guardrails.py   input (injection, confidentiality bypass, PII) and output (PII, promises, citations, leak check)
+    router.py       /chat, /chat/stream (SSE), /chat/{id}/history, DELETE /chat/{id}; rate limit
+core/               Shared: config (pydantic-settings), llm clients, search (access levels), rag (shared
+                    merge/rank/context helpers), db, domain (loss types)
 ingest/             ingest_policies.py – index data/policies/ with the shared pipeline (doc_id builtin-<stem>)
   pipeline.py       extract → describe → chunk → embed → index; process_policy_doc(doc_id) for uploads
   indexer.py        index schema, batched embedding with retry, upsert / delete chunks by doc_id
@@ -79,9 +90,11 @@ ingest/             ingest_policies.py – index data/policies/ with the shared 
   structure.py      blocks → sections/clauses (clause_id, parent_content, policy_type)
   chunking.py       clause-based chunks with token limits, figure chunks → index-shaped dicts (+ CLI)
 mcp_servers/        claims_server (8001), policy_server (8002), fraud_server (8003)
-ui/app.py           Streamlit entrypoint (st.navigation): claims_page.py (submit claim, timeline,
-                    adjuster review) and admin_page.py (login, policy upload/list/delete); common.py api()
-eval/               retrieval_eval.py + testset.json (keyword vs vector vs hybrid vs hybrid+semantic)
+ui/app.py           Streamlit entrypoint (st.navigation): chat_page.py (default; policy chat, live agent
+                    timeline), claims_page.py (submit claim, timeline, adjuster review) and admin_page.py
+                    (login, policy upload/list/delete, confidential toggle, chat audit); common.py api()
+eval/               retrieval_eval.py + testset.json (keyword vs vector vs hybrid vs hybrid+semantic);
+                    chat_eval.py + chat_testset.json (answers, citations, confidential leaks, injection)
 data/               policies/, sample_claims/, fraud_watchlist.json, uploads/, policy_uploads/ and SQLite DBs (runtime)
 ```
 
@@ -97,6 +110,23 @@ guard_input ─(blocked)→ close_claim
 ```
 
 Nodes return partial state updates; append UI timeline entries with `event(node, message, status)`.
+The claims workflow searches with `access="all"` because it is internal. Confidential clauses are labelled in the
+context, the letter writer only gets `public_context`, and `guard_output` escalates a letter that cites a
+confidential clause.
+
+## Policy chat workflow (LangGraph, `api/chat/`)
+
+```
+guard_input ─(blocked)→ respond
+  → rewrite_query → [hybrid_search (public) ∥ confidential_probe (scores + hashes only)] → semantic_rank
+  → build_context → access_check ─(restricted | not_found)→ respond
+  → answer_agent → evaluator_agent ─(fail, retries left)→ prepare_retry → rewrite_query | answer_agent
+  → guard_output → respond → END
+```
+
+Status per answer: `answered | partial | restricted | not_found | blocked | fallback`. Confidentiality is enforced
+in code (`core.search` access levels), never by prompting. The chat's LLMs must never receive confidential
+chunk text.
 
 ## Policy document conventions
 
@@ -105,8 +135,11 @@ Policies are chunked by markdown headings (after PDF → markdown conversion):
 - `## Section N – Title` → section (parent context, stored in `parent_content`)
 - `### N.M Clause title` → clause chunk, `clause_id = "N.M"`
 - `policy_type` from front matter (`policy_type: home|auto`) or filename prefix (`home_`, `auto_`), else `general`.
+- `confidential: true` in front matter (built-ins) or the admin flag (uploads) marks a document confidential.
 
-Index fields: `id, clause_id, title, section, content, parent_content, source, policy_type, content_vector`.
+Index fields: `id, clause_id, title, section, content, parent_content, source, policy_type, content_vector`, plus
+`doc_id, chunk_type, chunk_index, page, image_refs, chunker_version, confidential` (see `features/SAVE_IN_VECTOR_DB.md`).
+Any new search caller must choose an `access` level in `core.search.search_policy` (default `public`).
 Answers and letters must cite `clause_id`s. New ingestion paths (admin upload, `.docx`, images) should produce
 the same chunk shape so retrieval keeps working.
 
@@ -123,17 +156,23 @@ uv run python -m ingest.pipeline --pending           # resync uploads without th
 uv run uvicorn api.main:app --reload --port 8000     # API only (docs: /docs, graph: /graph)
 uv run streamlit run ui/app.py                       # UI only (http://localhost:8501)
 uv run python -m eval.retrieval_eval                 # retrieval comparison
+uv run python -m eval.chat_eval                      # policy chat: answers, citations, confidential leaks (must be 0)
 docker compose up --build                            # everything in containers
 ```
 
-There is no unit test suite yet; verify changes by running the API/UI and the demo scenarios in
-`data/sample_claims/README.md`.
+There is no unit test suite yet. Verify changes by running the API/UI, the demo scenarios in
+`data/sample_claims/README.md`, and `eval/chat_eval.py` for the policy chat.
 
 ## Conventions
 
 - All settings go through `core.config.get_settings()`; add new ones there and to `.env.example`.
+  Whenever `.env.example` changes, add the new variables the setup needs to the local `.env` too (in the
+  matching section, example defaults, random values for secrets; never overwrite or print existing values).
 - Use `core.llm.chat(mini=...)` / `structured(schema)` – never instantiate model clients directly, so the
   OpenAI/Azure switch keeps working. Mini model for guardrails, query rewrite and judging.
 - Treat uploaded documents as untrusted: they pass through `guard_input` (injection + PII) before reaching agents.
 - Keep MCP tools usable with fallback (`call_tool_or_fallback`) so the demo runs without the MCP servers.
+- `PLAN.md` is a temporary, git-ignored working plan for the feature in progress. When a feature is finished,
+  document it in `features/<FEATURE>.md` (e.g. `features/DOCUMENT_UPLOAD.md`, `features/SAVE_IN_VECTOR_DB.md`)
+  and point permanent docs (this file, README, other feature docs) there – never to `PLAN.md`.
 - Never commit `.env` or anything under `data/uploads/`, `data/policy_uploads/` or the `*.db` files.

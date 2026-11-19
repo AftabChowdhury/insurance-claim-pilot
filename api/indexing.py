@@ -4,6 +4,7 @@
 - On startup a resync queues every document that is not in sync: new, interrupted by a restart, indexed with
   old chunk settings, or missing from the index (e.g. after `ingest_policies --recreate`). Failed documents are
   retried only by an explicit resync / re-index from the Admin panel.
+- Every resync also repairs confidential-flag drift between the DB and the index (metadata-only update).
 - One document at a time (vision + embedding rate limits; SQLite), each document at most once in the queue.
 """
 import asyncio
@@ -11,7 +12,8 @@ import logging
 
 from core import db
 from core.config import get_settings
-from ingest.pipeline import QUEUED, documents_to_index, process_policy_doc
+from ingest.indexer import ensure_index
+from ingest.pipeline import QUEUED, documents_to_index, fix_confidential_drift, process_policy_doc
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +46,10 @@ class IndexWorker:
         return True
 
     async def resync(self, include_failed: bool = True, actor: str = "system") -> list[dict]:
-        """Queue every document whose index content is out of sync. Returns [{doc_id, reason}]."""
+        """Queue every document whose index content is out of sync. Returns [{doc_id, reason}].
+        A confidential flag that differs between DB and index is fixed in place (no re-indexing)."""
+        await asyncio.to_thread(ensure_index)  # adds new fields (e.g. confidential) to an existing index
+        await asyncio.to_thread(fix_confidential_drift, actor)
         todo = await asyncio.to_thread(documents_to_index, include_failed)
         queued = []
         for doc_id, reason in todo:

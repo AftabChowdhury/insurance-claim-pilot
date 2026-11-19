@@ -21,6 +21,8 @@ from core.config import get_settings
 from core.domain import LOSS_TYPES, policy_type_for
 
 from . import admin, auth
+from .chat.graph import build_chat_graph
+from .chat.router import router as chat_router
 from .documents import save_uploads
 from .graph.graph import build_graph
 from .indexing import IndexWorker, startup_resync
@@ -42,16 +44,20 @@ async def lifespan(app: FastAPI):
     resync = asyncio.create_task(startup_resync(app.state.indexer))
     async with AsyncSqliteSaver.from_conn_string(str(s.checkpoint_path)) as saver:
         app.state.runner = Runner(build_graph(checkpointer=saver))
+        app.state.chat_graph = build_chat_graph(checkpointer=saver)
         yield
     resync.cancel()
     await app.state.indexer.stop()
 
 
 app = FastAPI(title="ClaimPilot API", version="0.1.0", lifespan=lifespan,
-              description="Multi-agent insurance claims copilot (LangGraph + Azure AI Search + MCP)")
+              description="Multi-agent insurance claims copilot and policy chat "
+                          "(LangGraph + Azure AI Search + MCP)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(admin.chat_audit_router)
+app.include_router(chat_router)
 
 
 def runner(request: Request) -> Runner:
@@ -183,6 +189,7 @@ def get_audit(claim_id: str):
 
 
 @app.get("/graph", response_class=PlainTextResponse)
-def graph_mermaid(request: Request):
-    """Mermaid diagram of the agent graph (paste into mermaid.live)."""
-    return runner(request).graph.get_graph().draw_mermaid()
+def graph_mermaid(request: Request, which: str = "claims"):
+    """Mermaid diagram of an agent graph (paste into mermaid.live). which = claims | chat"""
+    graph = request.app.state.chat_graph if which == "chat" else runner(request).graph
+    return graph.get_graph().draw_mermaid()

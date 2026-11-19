@@ -1,4 +1,4 @@
-"""Vision step (PLAN.md §3.1): describe figures and OCR scanned pages with the chat model (gpt-4.1).
+"""Vision step (features/SAVE_IN_VECTOR_DB.md §1.6): describe figures and OCR scanned pages with the chat model (gpt-4.1).
 
 - Figures get a structured FigureDescription; workflow diagrams are turned into ordered steps.
 - The model sees the figure's context (document, heading path, text before/after, caption) so the description

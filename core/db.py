@@ -53,10 +53,13 @@ POLICY_DOC_COLUMNS = {
     "figure_count": "INTEGER",
     "chunker_version": "TEXT",   # chunk settings used for the indexed chunks (re-index when they change)
     "indexed_at": "TEXT",
+    "confidential": "INTEGER DEFAULT 0",  # 1 = hidden from the policy chat (admin flag)
 }
 
 # Audit rows that are not about a claim (admin login, policy uploads) use this pseudo claim id.
 ADMIN_AUDIT_ID = "ADMIN"
+# Audit rows of the policy chat (restricted / blocked requests).
+CHAT_AUDIT_ID = "CHAT"
 
 # Prior claims used by the fraud agent demo (policy AU-20457 has a suspicious history).
 SEED_CLAIMS = [
@@ -182,9 +185,10 @@ def add_policy_doc(doc: dict) -> dict:
     with connect() as c:
         c.execute(
             "INSERT INTO policy_documents (id, filename, stored_path, file_type, size_bytes, sha256, status,"
-            " uploaded_by, uploaded_at, policy_type) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " uploaded_by, uploaded_at, policy_type, confidential) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (doc["id"], doc["filename"], doc["stored_path"], doc["file_type"], doc["size_bytes"], doc["sha256"],
-             doc.get("status", "uploaded"), doc["uploaded_by"], now(), doc.get("policy_type")),
+             doc.get("status", "uploaded"), doc["uploaded_by"], now(), doc.get("policy_type"),
+             int(bool(doc.get("confidential")))),
         )
     return get_policy_doc(doc["id"])
 
@@ -204,6 +208,12 @@ def find_policy_doc_by_sha(sha256: str) -> dict | None:
 def list_policy_docs() -> list[dict]:
     with connect() as c:
         return [dict(r) for r in c.execute("SELECT * FROM policy_documents ORDER BY uploaded_at DESC, rowid DESC")]
+
+
+def get_chat_audit(limit: int = 100) -> list[dict]:
+    with connect() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM audit WHERE claim_id = ? ORDER BY id DESC LIMIT ?",
+                                           (CHAT_AUDIT_ID, limit))]
 
 
 def policy_doc_path(doc: dict):

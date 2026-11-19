@@ -1,4 +1,5 @@
-"""Admin Panel: static login, upload policy documents (.pdf/.doc/.docx), indexing status, re-index, chunk preview, delete."""
+"""Admin Panel: static login, upload policy documents (.pdf/.doc/.docx), confidential flag, indexing status,
+re-index, chunk preview, delete, and the log of restricted / blocked policy-chat requests."""
 from pathlib import Path
 
 import streamlit as st
@@ -77,8 +78,12 @@ files = st.file_uploader("PDF or Word (.doc, .docx) – you can select several f
                          accept_multiple_files=True, key=f"uploader_{st.session_state.uploader_key}")
 policy_label = st.selectbox("Policy type", list(POLICY_TYPES), help="Applies to all selected files. "
                             "'Detect' uses front matter or the file name (home…, auto…), else 'general'.")
+confidential = st.checkbox("🔒 Confidential", help="Applies to all selected files. Confidential documents are "
+                           "indexed but never shown to users in the policy chat; the chat tells the user the "
+                           "information is confidential instead.")
 if st.button("Upload", type="primary", disabled=not files):
-    res = admin_api("POST", "/admin/policies", data={"policy_type": POLICY_TYPES[policy_label]},
+    res = admin_api("POST", "/admin/policies",
+                    data={"policy_type": POLICY_TYPES[policy_label], "confidential": str(confidential).lower()},
                     files=[("files", (f.name, f.getvalue(), f.type or "application/octet-stream")) for f in files])
     if res:
         st.session_state.upload_results = res
@@ -126,28 +131,45 @@ def documents_list(was_active: bool) -> None:
     if not docs:
         st.info("No policy documents uploaded yet.")
         return
+    if st.session_state.get("only_confidential"):
+        docs = [d for d in docs if d.get("confidential")]
+        if not docs:
+            st.info("No confidential documents.")
+            return
     if active:
         st.caption("Indexing in progress – this list refreshes automatically.")
 
-    cols = [4, 1, 1, 3, 2, 1, 1]
+    cols = [4, 1, 1, 3, 2, 1, 1, 1]
     hdr = st.columns(cols)
-    for c, label in zip(hdr, ["File", "Type", "Policy", "Index status", "Uploaded at (UTC)", "", ""]):
+    for c, label in zip(hdr, ["File", "Type", "Policy", "Index status", "Uploaded at (UTC)", "", "", ""]):
         if label:
             c.markdown(f"**{label}**")
     for d in docs:
         row = st.columns(cols, vertical_alignment="center")
-        row[0].write(f"{d['filename']}  \n:gray[{human_size(d['size_bytes'])} · {d['uploaded_by']}]")
+        lock = " :red-badge[🔒 confidential]" if d.get("confidential") else ""
+        row[0].markdown(f"{d['filename']}{lock}  \n:gray[{human_size(d['size_bytes'])} · {d['uploaded_by']}]")
         row[1].write(d["file_type"].upper())
         row[2].write(d.get("policy_type") or "auto-detect")
         row[3].markdown(status_cell(d))
         if d["status"] == "failed" and d.get("error"):
             row[3].caption(d["error"][:200])
         row[4].write(d["uploaded_at"].replace("T", " ").split("+")[0])
-        if row[5].button("🔄", key=f"idx_{d['id']}", help=f"Re-index {d['filename']}",
+        is_conf = bool(d.get("confidential"))
+        if row[5].button("🔓" if is_conf else "🔒", key=f"conf_{d['id']}",
+                         help=("Make public (visible in the policy chat)" if is_conf
+                               else "Mark as confidential (hidden from the policy chat)")):
+            r = admin_api("PATCH", f"/admin/policies/{d['id']}", json={"confidential": not is_conf})
+            if r:
+                st.session_state.conf_toast = (
+                    f"{d['filename']} is now {'confidential' if r['confidential'] else 'public'}"
+                    f" · {r['chunks_updated']} chunk(s) updated in the index")
+                st.session_state.conf_error = r.get("error")
+            st.rerun(scope="app")
+        if row[6].button("🔄", key=f"idx_{d['id']}", help=f"Re-index {d['filename']}",
                          disabled=d["status"] in ACTIVE):
             admin_api("POST", f"/admin/policies/{d['id']}/index")
             st.rerun(scope="app")
-        if row[6].button("🗑", key=f"del_{d['id']}", help=f"Delete {d['filename']}"):
+        if row[7].button("🗑", key=f"del_{d['id']}", help=f"Delete {d['filename']}"):
             st.session_state.confirm_delete = [d["id"]]
             st.rerun(scope="app")
 
@@ -173,6 +195,11 @@ if confirm:
             st.session_state.pop("confirm_delete", None)
             st.rerun()
 
+if msg := st.session_state.pop("conf_toast", None):
+    st.toast(msg, icon="🔒")
+if err := st.session_state.pop("conf_error", None):
+    st.warning(err)
+st.checkbox("Show confidential documents only", key="only_confidential")
 is_active = any(d["status"] in ACTIVE for d in docs)
 st.fragment(documents_list, run_every=3 if is_active else None)(is_active)
 
@@ -186,6 +213,18 @@ if st.button("Delete selected", disabled=not selected):
     st.rerun()
 
 # ---------------------------------------------------------------------------
+# Policy chat: restricted / blocked requests
+# ---------------------------------------------------------------------------
+st.divider()
+with st.expander("🔒 Policy chat – restricted and blocked requests"):
+    rows = admin_api("GET", "/admin/chat/audit") or []
+    if not rows:
+        st.caption("No restricted or blocked chat requests yet.")
+    for a in rows:
+        kind = ":orange-badge[restricted]" if a["action"] == "chat_restricted" else ":red-badge[blocked]"
+        st.markdown(f"{kind} :gray[{a['ts'].replace('T', ' ').split('+')[0]} · {a['actor']}]  \n{a['detail']}")
+
+# ---------------------------------------------------------------------------
 # Chunk preview
 # ---------------------------------------------------------------------------
 st.divider()
@@ -197,6 +236,8 @@ if not indexed:
 doc_id = st.selectbox("Document", indexed, format_func=lambda i: by_id[i]["filename"])
 chunks = admin_api("GET", f"/admin/policies/{doc_id}/chunks") or []
 counts = {t: sum(c["chunk_type"] == t for c in chunks) for t in ("text", "table", "figure")}
+if by_id[doc_id].get("confidential"):
+    st.caption("🔒 Confidential document – these chunks are never returned to the policy chat.")
 st.caption(f"{len(chunks)} chunks · {counts['text']} text · {counts['table']} table · {counts['figure']} figure · "
            f"policy type {chunks[0]['policy_type'] if chunks else '-'}")
 for c in chunks:

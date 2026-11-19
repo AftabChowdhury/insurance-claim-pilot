@@ -76,12 +76,26 @@ class Settings(BaseSettings):
     vision_concurrency: int = 4        # parallel vision calls per document
     libreoffice_path: str = "soffice"  # converter for .doc -> .docx
 
-    # --- Chunking (tokens, one config for all formats – see PLAN.md §5) ---
+    # --- Chunking (tokens, one config for all formats – see features/SAVE_IN_VECTOR_DB.md §2.2) ---
     chunk_target_tokens: int = 450     # size of parts when a long clause is split
     chunk_max_tokens: int = 700        # clauses above this are split
     chunk_overlap_tokens: int = 60     # overlap between parts of the same clause only
     chunk_min_tokens: int = 40         # smaller last parts are merged into the previous part
     embed_batch_size: int = 64         # texts per embedding request
+
+    # --- Policy chat (features/POLICY_CHAT.md §7) ---
+    chat_eval_threshold: float = 0.8           # minimum faithfulness of an answer
+    chat_min_relevance: float = 0.7            # minimum answer relevance
+    chat_min_citation_coverage: float = 0.7    # minimum share of statements with a citation
+    chat_max_retries: int = 2                  # retry / regenerate attempts after a failed evaluation
+    chat_top_k: int = 6                        # chunks in the answer context
+    chat_history_turns: int = 6                # previous turns used to rewrite follow-up questions
+    chat_rate_limit_per_min: int = 20          # messages per session per minute
+    confidential_probe_min_score: float = 2.0  # reranker score: "the answer is in a confidential document"
+    confidential_dominance_margin: float = 1.0  # confidential score this much above the best public -> restricted
+    confidential_message: str = (
+        "Some of the information you asked about is in a confidential document, so I can't share it. "
+        "Please contact your insurance advisor or claims handler for details.")
 
     # --- UI ---
     api_url: str = "http://localhost:8000"

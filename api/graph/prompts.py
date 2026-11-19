@@ -72,6 +72,8 @@ Rules:
 - If denying, explain the reason and state the customer may appeal within 60 days.
 - If information is missing, decision="need_info" and list what is needed.
 - Do not mention fraud scoring. Do not give legal advice. Do not promise anything the policy does not state.
+- The coverage analysis may refer to internal (confidential) clauses that are NOT in the policy context below.
+  Never mention, quote or cite those; explain the decision only with the clauses in the policy context.
 - Plain, polite language; under 200 words.
 
 Claim facts:

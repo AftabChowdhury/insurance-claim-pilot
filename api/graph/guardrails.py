@@ -155,6 +155,9 @@ async def guard_output(state: ClaimState) -> dict:
     unknown = sorted(c for c in cited if known and c not in known)
     if unknown:
         violations.append(f"Cites clauses not in the retrieved context: {', '.join(unknown)}")
+    confidential = sorted(c for c in cited if c in set(state.get("confidential_clauses", [])))
+    if confidential:
+        violations.append(f"Letter cites confidential (internal) clauses: {', '.join(confidential)}")
     if payout > float(state.get("amount") or 0) + 0.01:
         violations.append("Payout exceeds the claimed amount")
     if coverage.get("policy_limit") and payout > float(coverage["policy_limit"]) + 0.01:

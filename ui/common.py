@@ -14,7 +14,8 @@ def api(method: str, path: str, *, quiet_status: tuple[int, ...] = (), **kw):
     can handle them (e.g. 401 on the admin page).
     """
     try:
-        r = requests.request(method, API + path, timeout=60, **kw)
+        kw.setdefault("timeout", 60)
+        r = requests.request(method, API + path, **kw)
     except requests.ConnectionError:
         st.error(f"Cannot reach the API at {API}. Start it with: uv run uvicorn api.main:app --port 8000")
         st.stop()

@@ -1,4 +1,4 @@
-"""PDF extraction with pymupdf4llm's layout engine (PLAN.md §2.1).
+"""PDF extraction with pymupdf4llm's layout engine (features/SAVE_IN_VECTOR_DB.md §1.2).
 
 - Text pages: markdown per page with headings, lists, tables and pictures in reading order. Pictures include
   vector drawings (flowcharts drawn with shapes), rendered as images; text inside them becomes hint_text.

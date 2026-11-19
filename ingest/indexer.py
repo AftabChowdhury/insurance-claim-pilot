@@ -1,4 +1,4 @@
-"""Embedding + Azure AI Search indexing (PLAN.md §6).
+"""Embedding + Azure AI Search indexing (features/SAVE_IN_VECTOR_DB.md §3, §4).
 
 - build_index(): index schema (hybrid BM25 + vector + semantic config). New fields are only *added* to the
   existing schema, so create_or_update works on an existing index without a rebuild.
@@ -6,6 +6,7 @@
 - index_chunks(): idempotent per document: upload the new chunks, then delete chunks of this doc_id that are
   no longer produced (no window in which the document has no chunks).
 - delete_doc_chunks(): remove all chunks of a document (admin delete).
+- set_doc_confidential(): change the confidential flag of a document's chunks in place (no re-embedding).
 """
 import logging
 import time
@@ -37,7 +38,8 @@ log = logging.getLogger(__name__)
 
 # fields uploaded to the index (chunk dicts also carry embed_text / tokens, which are not stored)
 INDEX_FIELDS = ["id", "clause_id", "title", "section", "content", "parent_content", "source", "policy_type",
-                "doc_id", "chunk_type", "chunk_index", "page", "image_refs", "chunker_version", "content_vector"]
+                "doc_id", "chunk_type", "chunk_index", "page", "image_refs", "chunker_version", "confidential",
+                "content_vector"]
 UPLOAD_BATCH = 100        # ~3072 floats per chunk: keep requests well below the 16 MB limit
 MAX_EMBED_TOKENS = 8000   # text-embedding-3-large input limit is 8191 tokens
 
@@ -59,13 +61,15 @@ def build_index(name: str, dims: int, semantic_name: str) -> SearchIndex:
         SimpleField(name="policy_type", type=SearchFieldDataType.String, filterable=True, facetable=True),
         SearchField(name="content_vector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
                     searchable=True, vector_search_dimensions=dims, vector_search_profile_name="hnsw-profile"),
-        # --- added for uploaded documents (PLAN.md §6) ---
+        # --- added for uploaded documents (features/SAVE_IN_VECTOR_DB.md §4.1) ---
         SimpleField(name="doc_id", type=SearchFieldDataType.String, filterable=True),
         SimpleField(name="chunk_type", type=SearchFieldDataType.String, filterable=True, facetable=True),
         SimpleField(name="chunk_index", type=SearchFieldDataType.Int32, filterable=True, sortable=True),
         SimpleField(name="page", type=SearchFieldDataType.Int32),
         SimpleField(name="image_refs", type=SearchFieldDataType.Collection(SearchFieldDataType.String)),
         SimpleField(name="chunker_version", type=SearchFieldDataType.String, filterable=True),
+        # --- confidential documents: hidden from the policy chat (security trimming filter) ---
+        SimpleField(name="confidential", type=SearchFieldDataType.Boolean, filterable=True, facetable=True),
     ]
     vector_search = VectorSearch(
         algorithms=[HnswAlgorithmConfiguration(name="hnsw")],
@@ -230,6 +234,34 @@ def doc_chunk_count(doc_id: str) -> int:
         return results.get_count() or 0
     except ResourceNotFoundError:
         return 0
+
+
+def doc_confidential_drift(doc_id: str, confidential: bool) -> int:
+    """Number of chunks of a document whose confidential flag differs from `confidential` (null = public)."""
+    flag = f"confidential ne true" if confidential else "confidential eq true"
+    try:
+        results = writer().search(search_text="*", filter=f"doc_id eq '{_odata(doc_id)}' and {flag}", top=0,
+                                  include_total_count=True)
+        return results.get_count() or 0
+    except ResourceNotFoundError:
+        return 0
+
+
+def set_doc_confidential(doc_id: str, confidential: bool) -> int:
+    """Set the confidential flag on every chunk of a document (metadata-only merge, vectors untouched).
+    Returns the number of chunks updated."""
+    ensure_index()
+    ids = sorted(chunk_ids(f"doc_id eq '{_odata(doc_id)}'"))
+    failed: list[str] = []
+    for start in range(0, len(ids), 1000):
+        batch = [{"id": i, "confidential": bool(confidential)} for i in ids[start:start + 1000]]
+        for r in writer().merge_documents(batch):
+            if not r.succeeded:
+                failed.append(f"{r.key}: {r.error_message}")
+    if failed:
+        raise IndexingError(f"{len(failed)} chunk(s) could not be updated, e.g. {failed[0]}")
+    log.info("%s: confidential=%s set on %d chunk(s)", doc_id, confidential, len(ids))
+    return len(ids)
 
 
 def delete_doc_chunks(doc_id: str) -> int:

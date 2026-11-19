@@ -1,8 +1,9 @@
-"""Policy indexing pipeline: extract -> describe figures -> chunk -> embed -> Azure AI Search (PLAN.md §1, §7).
+"""Policy indexing pipeline: extract -> describe figures -> chunk -> embed -> Azure AI Search.
 
     await index_policy_file(path, doc_id, work_dir)   # any file (used by ingest_policies for data/policies/)
     await process_policy_doc(doc_id)                  # an admin-uploaded document; keeps its DB status current
     documents_to_index()                              # which uploads need (re)indexing -> resync
+    fix_confidential_drift()                          # index flag != DB flag -> metadata-only update
 
 In the API, api/indexing.py runs process_policy_doc in a background worker: automatically after every upload,
 and a resync on startup. The CLI below does the same without the API:
@@ -22,7 +23,8 @@ from core.config import get_settings
 from ingest.chunking import ChunkSettings, chunk_document
 from ingest.extract import ExtractedDocument, extract
 from ingest.figures import describe_figures
-from ingest.indexer import delete_doc_chunks, doc_chunk_count, ensure_index, index_chunks
+from ingest.indexer import (delete_doc_chunks, doc_chunk_count, doc_confidential_drift, ensure_index, index_chunks,
+                            set_doc_confidential)
 
 log = logging.getLogger(__name__)
 
@@ -32,8 +34,10 @@ UPLOADED, QUEUED, PROCESSING, INDEXED, FAILED = "uploaded", "queued", "processin
 
 async def index_policy_file(path: Path, doc_id: str, work_dir: Path, *, source: str | None = None,
                             policy_type: str | None = None, reextract: bool = False,
-                            describe: bool | None = None, on_stage: Callable[[str], None] | None = None) -> dict:
-    """Run all steps for one file. Reuses work_dir/extracted.json (and the vision cache) unless reextract."""
+                            describe: bool | None = None, on_stage: Callable[[str], None] | None = None,
+                            confidential: bool | None = None) -> dict:
+    """Run all steps for one file. Reuses work_dir/extracted.json (and the vision cache) unless reextract.
+    confidential: admin flag; None = front matter `confidential: true`, else public."""
     stage = on_stage or (lambda _s: None)
     extracted = work_dir / "extracted.json"
     if extracted.is_file() and not reextract:
@@ -47,7 +51,7 @@ async def index_policy_file(path: Path, doc_id: str, work_dir: Path, *, source: 
         doc.save(extracted)
 
     stage("chunking")
-    chunks = chunk_document(doc, doc_id, policy_type, source)
+    chunks = chunk_document(doc, doc_id, policy_type, source, confidential=confidential)
     if not chunks:
         raise ValueError(f"{path.name}: no text found to index")
     stats = await asyncio.to_thread(index_chunks, chunks, doc_id, stage)
@@ -58,7 +62,8 @@ async def index_policy_file(path: Path, doc_id: str, work_dir: Path, *, source: 
         "doc_id": doc_id, "chunks": len(chunks), "policy_type": chunks[0]["policy_type"],
         "figures": sum(not f.decorative for f in doc.figures),
         "figure_chunks": sum(c["chunk_type"] == "figure" for c in chunks),
-        "chunker_version": chunks[0]["chunker_version"], "warnings": doc.warnings, **stats,
+        "chunker_version": chunks[0]["chunker_version"], "confidential": chunks[0]["confidential"],
+        "warnings": doc.warnings, **stats,
     }
 
 
@@ -79,7 +84,8 @@ async def process_policy_doc(doc_id: str, policy_type: str | None = None, reextr
     try:
         result = await index_policy_file(
             db.policy_doc_path(record), doc_id, work_dir, source=record["filename"],
-            policy_type=policy_type or record.get("policy_type"), reextract=reextract, on_stage=on_stage)
+            policy_type=policy_type or record.get("policy_type"), reextract=reextract, on_stage=on_stage,
+            confidential=bool(record.get("confidential")))
     except Exception as e:
         if db.get_policy_doc(doc_id):
             db.update_policy_doc(doc_id, status=FAILED, stage=None, error=str(e)[:1000])
@@ -91,6 +97,10 @@ async def process_policy_doc(doc_id: str, policy_type: str | None = None, reextr
         await asyncio.to_thread(delete_doc_chunks, doc_id)
         log.info("%s was deleted during indexing; its chunks were removed again", doc_id)
         return None
+    current = db.get_policy_doc(doc_id)
+    if bool(current.get("confidential")) != result["confidential"]:  # admin toggled the flag while indexing
+        await asyncio.to_thread(set_doc_confidential, doc_id, bool(current.get("confidential")))
+        result["confidential"] = bool(current.get("confidential"))
     db.update_policy_doc(doc_id, status=INDEXED, stage=None, error=None, chunk_count=result["chunks"],
                          figure_count=result["figures"], chunker_version=result["chunker_version"],
                          policy_type=result["policy_type"], indexed_at=db.now())
@@ -126,6 +136,24 @@ def documents_to_index(include_failed: bool = True, check_index: bool = True) ->
     return todo
 
 
+def fix_confidential_drift(actor: str = "system") -> list[dict]:
+    """Indexed documents whose chunks do not carry the DB's confidential flag (e.g. a crash between the DB write
+    and the index update) get the flag set again – metadata only, no re-embedding. Returns [{doc_id, updated}]."""
+    fixed = []
+    for d in db.list_policy_docs():
+        if d["status"] != INDEXED:
+            continue
+        flag = bool(d.get("confidential"))
+        if doc_confidential_drift(d["id"], flag):
+            n = set_doc_confidential(d["id"], flag)
+            db.add_audit(db.ADMIN_AUDIT_ID, actor, "policy_confidential_resynced",
+                         f"{d['id']} {d['filename']}: confidential={flag} on {n} chunk(s)")
+            fixed.append({"doc_id": d["id"], "updated": n})
+    if fixed:
+        log.info("Confidential flag re-synced for %d document(s)", len(fixed))
+    return fixed
+
+
 def main() -> None:
     import argparse
     import sys
@@ -151,6 +179,9 @@ def main() -> None:
         todo = [(i, "forced") for i in args.doc_id or []]
     if not (args.pending or args.all or args.doc_id):
         ap.error("give --pending, --all or --doc-id")
+    if args.pending:
+        for f in fix_confidential_drift(actor="cli"):
+            print(f"FLAG {f['doc_id']}: confidential flag re-synced on {f['updated']} chunk(s)")
     if not todo:
         print("Everything is in sync.")
         return

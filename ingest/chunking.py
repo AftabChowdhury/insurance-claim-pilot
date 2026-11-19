@@ -1,4 +1,4 @@
-"""Structure-aware chunking (PLAN.md §4, §3.2).
+"""Structure-aware chunking (features/SAVE_IN_VECTOR_DB.md §2).
 
 One clause = one chunk, unless the clause is longer than CHUNK_MAX_TOKENS: then it is split on block,
 paragraph and sentence boundaries into parts of ~CHUNK_TARGET_TOKENS with CHUNK_OVERLAP_TOKENS overlap
@@ -204,11 +204,20 @@ def _key(*parts: str) -> str:
     return KEY_RE.sub("_", "-".join(parts).replace(".", "_"))
 
 
+def is_confidential(doc: ExtractedDocument, override: bool | None = None) -> bool:
+    """Admin's flag -> front matter `confidential: true` -> public."""
+    if override is not None:
+        return bool(override)
+    return str(doc.front_matter.get("confidential", "")).strip().lower() in ("true", "yes", "1")
+
+
 def chunk_document(doc: ExtractedDocument, doc_id: str, policy_type: str | None = None,
-                   source: str | None = None, cfg: ChunkSettings | None = None) -> list[dict]:
+                   source: str | None = None, cfg: ChunkSettings | None = None,
+                   confidential: bool | None = None) -> list[dict]:
     cfg = cfg or ChunkSettings.from_settings()
     source = source or doc.source
     policy_type = detect_policy_type(doc, policy_type, source)
+    confidential = is_confidential(doc, confidential)
     structure = detect_structure(doc)
     chunks: list[dict] = []
 
@@ -232,6 +241,7 @@ def chunk_document(doc: ExtractedDocument, doc_id: str, policy_type: str | None 
             "page": page,
             "image_refs": [_rel(p) for p in image_refs],
             "chunker_version": cfg.version,
+            "confidential": confidential,
             "embed_text": f"{header}\n\n{content}",
             "tokens": count_tokens(content),
         })
@@ -264,7 +274,7 @@ def chunk_document(doc: ExtractedDocument, doc_id: str, policy_type: str | None 
 
 def _figure_reference_targets(structure: Structure) -> dict[int, Clause]:
     """Figures in intro/appendix text -> the clause that refers to them ('see Figure 3') or that the vision
-    model found in the figure (referenced_clauses). PLAN.md §3.2 point 3."""
+    model found in the figure (referenced_clauses). features/SAVE_IN_VECTOR_DB.md §2.2 (linking figures to clauses)."""
     by_number: dict[str, Clause] = {}
     by_clause_id = {c.clause_id: c for c in structure.clauses if not c.synthetic}
     for c in structure.clauses:

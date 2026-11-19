@@ -1,4 +1,4 @@
-"""Word extraction (PLAN.md §2.2 / §2.3).
+"""Word extraction (features/SAVE_IN_VECTOR_DB.md §1.3).
 
 .docx: the document body is walked in order (paragraphs, tables, content controls), so images, SmartArt
 diagrams and text boxes stay at the position where they appear. Headers/footers are skipped (logos).

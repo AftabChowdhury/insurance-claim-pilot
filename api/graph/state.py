@@ -37,6 +37,8 @@ class ClaimState(TypedDict, total=False):
     ranked: list[dict]       # after semantic ranking + filtering
     context: str
     context_clauses: list[str]
+    public_context: str          # context without confidential clauses (for the customer letter)
+    confidential_clauses: list[str]
     coverage: dict
     fraud: dict
     letter: dict

@@ -1,4 +1,4 @@
-"""Structure detection (PLAN.md §4.1): extracted blocks -> sections -> clauses with clause_id.
+"""Structure detection (features/SAVE_IN_VECTOR_DB.md §2.1): extracted blocks -> sections -> clauses with clause_id.
 
 - The document title (level-0 heading, or a single top-level heading before everything else) is not a section.
 - The highest remaining heading level = section, the next level = clause. Deeper headings stay inside the clause.
