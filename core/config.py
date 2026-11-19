@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     policy_max_files: int = 20
     policy_max_mb: int = 25
 
+    # --- Policy extraction (images, scanned pages, .doc) ---
+    image_describe: bool = True        # describe figures with the vision model (chat deployment)
+    image_min_px: int = 120            # smaller images are icons: skipped
+    image_max_per_doc: int = 50        # cost guard for vision calls
+    scan_ocr: bool = True              # OCR scanned PDF pages with the vision model
+    vision_concurrency: int = 4        # parallel vision calls per document
+    libreoffice_path: str = "soffice"  # converter for .doc -> .docx
+
     # --- UI ---
     api_url: str = "http://localhost:8000"
 

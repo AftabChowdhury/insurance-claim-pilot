@@ -1,10 +1,12 @@
 """Admin Panel API: upload, list and delete policy documents.
 
 Files are stored in settings.policy_upload_dir as <doc_id>_<filename> and registered in the
-policy_documents table with status "uploaded". Parsing and indexing happen in a later step.
+policy_documents table with status "uploaded". Extraction (ingest.extract) writes to <policy_upload_dir>/<doc_id>/;
+chunking, embedding and indexing happen in a later step.
 """
 import hashlib
 import logging
+import shutil
 import uuid
 from pathlib import Path
 
@@ -100,6 +102,9 @@ def delete_policy(doc_id: str, user: str = Depends(require_admin)):
         path.unlink(missing_ok=True)
     else:
         log.warning("Not deleting %s: outside the policy upload folder", path)
+    work_dir = _upload_dir() / doc_id  # extraction output: figures, figures.json, extracted.json
+    if work_dir.is_dir():
+        shutil.rmtree(work_dir, ignore_errors=True)
     db.delete_policy_doc(doc_id)
     db.add_audit(db.ADMIN_AUDIT_ID, user, "policy_deleted", f"{doc_id} {doc['filename']}")
     return {"doc_id": doc_id, "deleted": True}

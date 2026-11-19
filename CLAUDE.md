@@ -28,8 +28,8 @@ for high-stakes claims.
 | Claim documents: images and scanned PDFs | **TODO** – marked `ocr_pending`; needs OCR / vision model (Azure Document Intelligence or a multimodal LLM) |
 | Policy chat | **TODO** – no chat endpoint or UI yet; reuse `core/search.py` + `api/graph/retrieval.py` patterns and cite `clause_id`s |
 | Admin panel for policy upload | Implemented – Streamlit Admin page + `/admin/policies` (upload `.pdf`/`.doc`/`.docx`, list, delete) storing files in `data/policy_uploads/` |
-| Indexing of admin-uploaded policies | **TODO** – uploads have status `uploaded` in `policy_documents`; only the CLI `ingest/ingest_policies.py` indexes (`data/policies/`, `.md`/`.pdf`) |
-| Policy ingest of `.doc`/`.docx` and embedded images | **TODO** – extend `load_markdown()` in `ingest/ingest_policies.py`; images need OCR/captioning |
+| Extraction of policy documents (`.pdf`/`.docx`/`.doc`/`.md`, images, workflow diagrams, scanned pages) | Implemented – `ingest/extract/` + `ingest/figures.py` (vision model = chat deployment); CLI `uv run python -m ingest.extract`; see `PLAN.md` |
+| Chunking / embedding / indexing of admin-uploaded policies | **TODO** (see `PLAN.md` §4, §6, §7) – uploads have status `uploaded`; only the CLI `ingest/ingest_policies.py` indexes (`data/policies/`, `.md`/`.pdf`) |
 | Authentication / admin vs. user roles | Partial – static admin login (`api/auth.py`, HMAC bearer token); claim endpoints are open |
 
 ## Tech stack
@@ -68,6 +68,9 @@ api/                FastAPI app
     prompts.py, schemas.py
 core/               Shared: config (pydantic-settings), llm clients, search, db, domain (loss types)
 ingest/             ingest_policies.py – parse policies into clause chunks and upload to Azure AI Search
+  extract/          policy file → ExtractedDocument (ordered blocks: heading/paragraph/list/table/figure);
+                    pdf.py (pymupdf4llm layout), word.py (.docx walk, .doc via LibreOffice), markdown.py
+  figures.py        vision model: figure descriptions (workflow steps), scanned-page OCR, figures.json cache
 mcp_servers/        claims_server (8001), policy_server (8002), fraud_server (8003)
 ui/app.py           Streamlit entrypoint (st.navigation): claims_page.py (submit claim, timeline,
                     adjuster review) and admin_page.py (login, policy upload/list/delete); common.py api()
