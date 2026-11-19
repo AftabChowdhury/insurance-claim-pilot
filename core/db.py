@@ -1,5 +1,8 @@
 """Claims system of record (SQLite locally; swap for Azure PostgreSQL later)."""
+import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -41,7 +44,22 @@ CREATE TABLE IF NOT EXISTS policy_documents (
     uploaded_by TEXT NOT NULL,
     uploaded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS customers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    address TEXT,
+    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    phone TEXT,
+    password TEXT NOT NULL,
+    policy_number TEXT,
+    created_at TEXT NOT NULL
+);
 """
+
+# Columns added to the claims table of existing databases by init_db().
+CLAIM_COLUMNS = {
+    "customer_id": "TEXT",       # set for claims submitted by a logged-in customer
+}
 
 # Indexing state of policy documents, added to existing databases by init_db().
 # status: uploaded -> queued -> processing -> indexed | failed ; stage: current step while processing
@@ -60,6 +78,36 @@ POLICY_DOC_COLUMNS = {
 ADMIN_AUDIT_ID = "ADMIN"
 # Audit rows of the policy chat (restricted / blocked requests).
 CHAT_AUDIT_ID = "CHAT"
+# Audit rows of customer logins.
+CUSTOMER_AUDIT_ID = "CUSTOMER"
+
+# Fictional demo customers (example.com is a reserved domain). Every password is settings.customer_password.
+# CUST-1001 / CUST-1002 own the demo policies used by the sample claims (AU-20457 has a suspicious history).
+SEED_CUSTOMERS = [
+    ("CUST-1001", "Emma Schneider", "Lindenstrasse 12, 10969 Berlin", "emma.schneider@example.com",
+     "+49 30 5550 1001", "HO-55821"),
+    ("CUST-1002", "Lukas Weber", "Hafenweg 3, 20457 Hamburg", "lukas.weber@example.com",
+     "+49 40 5550 1002", "AU-20457"),
+    ("CUST-1003", "Sophia Fischer", "Marienplatz 8, 80331 Munich", "sophia.fischer@example.com",
+     "+49 89 5550 1003", "HO-61234"),
+    ("CUST-1004", "Noah Wagner", "Koenigsallee 21, 40212 Duesseldorf", "noah.wagner@example.com",
+     "+49 211 5550 1004", "AU-31877"),
+    ("CUST-1005", "Mia Becker", "Zeil 45, 60313 Frankfurt", "mia.becker@example.com",
+     "+49 69 5550 1005", "HO-70412"),
+    ("CUST-1006", "Ben Hoffmann", "Schlossstrasse 9, 70173 Stuttgart", "ben.hoffmann@example.com",
+     "+49 711 5550 1006", "AU-42950"),
+    ("CUST-1007", "Hannah Schulz", "Domkloster 2, 50667 Cologne", "hannah.schulz@example.com",
+     "+49 221 5550 1007", "HO-83106"),
+    ("CUST-1008", "Elias Koch", "Prager Strasse 17, 01069 Dresden", "elias.koch@example.com",
+     "+49 351 5550 1008", "AU-58321"),
+    ("CUST-1009", "Lea Richter", "Breite Strasse 30, 04109 Leipzig", "lea.richter@example.com",
+     "+49 341 5550 1009", "HO-94570"),
+    ("CUST-1010", "Paul Klein", "Kroepcke 4, 30159 Hanover", "paul.klein@example.com",
+     "+49 511 5550 1010", "AU-67044"),
+]
+CUSTOMER_PUBLIC = "id, name, address, email, phone, policy_number, created_at"  # never select the password
+
+_PBKDF2_ITERATIONS = 200_000
 
 # Prior claims used by the fraud agent demo (policy AU-20457 has a suspicious history).
 SEED_CLAIMS = [
@@ -87,13 +135,42 @@ def connect():
         conn.close()
 
 
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _PBKDF2_ITERATIONS).hex()
+    return f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${salt}${digest}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        algo, iterations, salt, digest = stored.split("$")
+    except ValueError:
+        return False
+    if algo != "pbkdf2_sha256":
+        return False
+    calc = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(iterations)).hex()
+    return hmac.compare_digest(calc, digest)
+
+
 def init_db() -> None:
     with connect() as c:
         c.executescript(SCHEMA)
-        existing = {r["name"] for r in c.execute("PRAGMA table_info(policy_documents)")}
-        for col, typ in POLICY_DOC_COLUMNS.items():
-            if col not in existing:
-                c.execute(f"ALTER TABLE policy_documents ADD COLUMN {col} {typ}")
+        for table, columns in (("policy_documents", POLICY_DOC_COLUMNS), ("claims", CLAIM_COLUMNS)):
+            existing = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+            for col, typ in columns.items():
+                if col not in existing:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        if c.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 0:
+            ts, pw = now(), get_settings().customer_password
+            for cid, name, addr, email, phone, pol in SEED_CUSTOMERS:
+                c.execute(
+                    "INSERT INTO customers (id, name, address, email, phone, password, policy_number, created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (cid, name, addr, email, phone, hash_password(pw), pol, ts),
+                )
+        # Link claims without an owner (seed claims, claims submitted via the API) to the policy holder.
+        c.execute("UPDATE claims SET customer_id = (SELECT id FROM customers WHERE customers.policy_number ="
+                  " claims.policy_number) WHERE customer_id IS NULL")
         if c.execute("SELECT COUNT(*) FROM claims").fetchone()[0] == 0:
             for cid, pol, lt, amt, dt, desc, st, pay in SEED_CLAIMS:
                 c.execute(
@@ -111,16 +188,24 @@ def _row(r: sqlite3.Row | None) -> dict | None:
     return d
 
 
-def create_claim(claim: dict) -> dict:
+def new_claim_id() -> str:
+    while True:
+        cid = f"CLM-{secrets.randbelow(8000) + 2000}"
+        if not get_claim(cid):
+            return cid
+
+
+def create_claim(claim: dict, actor: str = "customer") -> dict:
     ts = now()
     with connect() as c:
         c.execute(
             "INSERT INTO claims (id, policy_number, loss_type, amount, loss_date, description, documents, status,"
-            " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " customer_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (claim["id"], claim["policy_number"], claim["loss_type"], claim["amount"], claim.get("loss_date"),
-             claim.get("description"), json.dumps(claim.get("documents", [])), "RECEIVED", ts, ts),
+             claim.get("description"), json.dumps(claim.get("documents", [])), "RECEIVED",
+             claim.get("customer_id"), ts, ts),
         )
-    add_audit(claim["id"], "customer", "submitted", f"{len(claim.get('documents', []))} document(s)")
+    add_audit(claim["id"], actor, "submitted", f"{len(claim.get('documents', []))} document(s)")
     return get_claim(claim["id"])
 
 
@@ -129,11 +214,16 @@ def get_claim(claim_id: str) -> dict | None:
         return _row(c.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone())
 
 
-def list_claims(status: str | None = None, limit: int = 50) -> list[dict]:
-    q, args = "SELECT * FROM claims", []
+def list_claims(status: str | None = None, limit: int = 50, customer_id: str | None = None) -> list[dict]:
+    q, where, args = "SELECT * FROM claims", [], []
     if status:
-        q += " WHERE status = ?"
+        where.append("status = ?")
         args.append(status)
+    if customer_id:
+        where.append("customer_id = ?")
+        args.append(customer_id)
+    if where:
+        q += " WHERE " + " AND ".join(where)
     q += " ORDER BY created_at DESC LIMIT ?"
     args.append(limit)
     with connect() as c:
@@ -245,3 +335,27 @@ def update_policy_doc(doc_id: str, **fields) -> None:
 def delete_policy_doc(doc_id: str) -> None:
     with connect() as c:
         c.execute("DELETE FROM policy_documents WHERE id = ?", (doc_id,))
+
+
+# ---------------------------------------------------------------------------
+# Customers (demo data; the password column holds a PBKDF2 hash and is never returned)
+# ---------------------------------------------------------------------------
+def list_customers() -> list[dict]:
+    with connect() as c:
+        return [dict(r) for r in c.execute(f"SELECT {CUSTOMER_PUBLIC} FROM customers ORDER BY id")]
+
+
+def get_customer(customer_id: str) -> dict | None:
+    with connect() as c:
+        r = c.execute(f"SELECT {CUSTOMER_PUBLIC} FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def authenticate_customer(email: str, password: str) -> dict | None:
+    """The customer (without password) if email + password match, else None. Email is case-insensitive."""
+    with connect() as c:
+        r = c.execute("SELECT id, password FROM customers WHERE email = ?", (email.strip(),)).fetchone()
+    if r is None:
+        hash_password(password)  # similar response time for unknown emails
+        return None
+    return get_customer(r["id"]) if verify_password(password, r["password"]) else None

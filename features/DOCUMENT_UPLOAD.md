@@ -34,7 +34,7 @@ come in a later branch (see [Next steps](#next-steps)).
 | `core/db.py` | `policy_documents` table + helpers; `ADMIN_AUDIT_ID` |
 | `ui/app.py` | Streamlit entrypoint: `st.navigation` with the Claims and Admin pages |
 | `ui/admin_page.py` | Admin Panel page |
-| `ui/claims_page.py` | Existing claims UI (moved from `ui/app.py`, unchanged behaviour) |
+| `ui/claims_page.py` | Existing claims UI (moved from `ui/app.py`, unchanged behaviour). Later replaced: the review part is now the Admin panel's Claims review tab (`ui/claims_review.py`); customers submit on Submit Claim |
 | `ui/common.py` | Shared `api()` HTTP helper |
 
 ## Configuration

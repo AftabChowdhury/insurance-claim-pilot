@@ -33,7 +33,10 @@ for high-stakes claims.
 | Chunking of policy documents | Implemented – `ingest/structure.py` + `ingest/chunking.py` (clause-based, token limits); CLI `uv run python -m ingest.chunking` |
 | Embedding / indexing of policies | Implemented – `ingest/indexer.py` + `ingest/pipeline.py`; built-in policies via `ingest/ingest_policies.py`; admin delete removes chunks |
 | Automatic indexing after admin upload + resync | Implemented – background worker `api/indexing.py` (queue, resync on API start), Admin page status / re-index / resync / chunk preview (`features/SAVE_IN_VECTOR_DB.md` §4.3) |
-| Authentication / admin vs. user roles | Partial – static admin login (`api/auth.py`, HMAC bearer token); claim and chat endpoints are open (chat users always get `access="public"`) |
+| Customers + customer claim form | Implemented – seeded `customers` table (`core/db.py`, claims linked by policy number), admin Customers tab + `GET /admin/customers`, customer login (email + static password `user`), Submit Claim + My Claims pages and `/customer/claims`; claims stored as `RECEIVED` with `customer_id`; customers see a reduced status (security / escalation states shown as "in review") |
+| Claims review (agent timeline + adjuster review) | Admin panel tab (`ui/claims_review.py`); the old public Claims page was removed. The workflow is started via `POST /claims` (e.g. from `/docs`) until the claim check runs for customer claims |
+| Claim check for customer claims | **TODO** – customer claims do not start the LangGraph workflow yet |
+| Authentication / admin vs. user roles | Partial – static admin and customer logins (`api/auth.py`, HMAC bearer token with `role` admin/customer); internal claim and chat endpoints are open (chat users always get `access="public"`) |
 
 ## Tech stack
 
@@ -56,9 +59,13 @@ api/                FastAPI app
   main.py           Endpoints: /claims, /claims/{id}, /claims/{id}/events (SSE), /claims/{id}/review,
                     /claims/{id}/letter, /claims/{id}/audit, /loss-types, /graph, /health
   documents.py      Upload validation (types, 10 MB, max 10 files) + text extraction
-  auth.py           Static admin login (POST /admin/login) + require_admin bearer-token dependency
+  auth.py           Static admin + customer logins (POST /admin/login, /customer/login); require_admin /
+                    require_customer bearer-token dependencies (token role admin | customer)
+  customer.py       /customer/me, POST|GET /customer/claims, GET /customer/claims/{id} (own claims only; claim
+                    request stored as RECEIVED, no claim check yet; customer-facing status + letter once decided)
   admin.py          /admin/policies: upload (.pdf/.doc/.docx), list, delete, resync, re-index, chunk preview,
-                    PATCH confidential flag; /admin/chat/audit (restricted / blocked chat requests)
+                    PATCH confidential flag; /admin/chat/audit (restricted / blocked chat requests);
+                    GET /admin/customers
   indexing.py       IndexWorker: background queue that indexes uploads; resync on startup
   files.py          safe_name() for uploaded file names
   runner.py         Background graph runs, status (running / awaiting_review / completed / failed)
@@ -80,7 +87,8 @@ api/                FastAPI app
     guardrails.py   input (injection, confidentiality bypass, PII) and output (PII, promises, citations, leak check)
     router.py       /chat, /chat/stream (SSE), /chat/{id}/history, DELETE /chat/{id}; rate limit
 core/               Shared: config (pydantic-settings), llm clients, search (access levels), rag (shared
-                    merge/rank/context helpers), db, domain (loss types)
+                    merge/rank/context helpers), db (claims, audit, policy docs, customers + seed data),
+                    domain (loss types)
 ingest/             ingest_policies.py – index data/policies/ with the shared pipeline (doc_id builtin-<stem>)
   pipeline.py       extract → describe → chunk → embed → index; process_policy_doc(doc_id) for uploads
   indexer.py        index schema, batched embedding with retry, upsert / delete chunks by doc_id
@@ -91,8 +99,10 @@ ingest/             ingest_policies.py – index data/policies/ with the shared 
   chunking.py       clause-based chunks with token limits, figure chunks → index-shaped dicts (+ CLI)
 mcp_servers/        claims_server (8001), policy_server (8002), fraud_server (8003)
 ui/app.py           Streamlit entrypoint (st.navigation): chat_page.py (default; policy chat, live agent
-                    timeline), claims_page.py (submit claim, timeline, adjuster review) and admin_page.py
-                    (login, policy upload/list/delete, confidential toggle, chat audit); common.py api()
+                    timeline), submit_claim_page.py (customer claim form), my_claims_page.py (customer's claim
+                    status + decision letter) and admin_page.py (login; tabs Policy documents (upload/list/delete,
+                    confidential toggle, chat audit), Claims review (claims_review.py: agent timeline, adjuster
+                    review) and Customers); common.py api() + shared customer login
 eval/               retrieval_eval.py + testset.json (keyword vs vector vs hybrid vs hybrid+semantic);
                     chat_eval.py + chat_testset.json (answers, citations, confidential leaks, injection)
 data/               policies/, sample_claims/, fraud_watchlist.json, uploads/, policy_uploads/ and SQLite DBs (runtime)

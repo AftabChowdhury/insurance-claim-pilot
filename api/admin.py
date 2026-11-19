@@ -1,4 +1,4 @@
-"""Admin Panel API: upload, list, delete, (re)index and resync policy documents.
+"""Admin Panel API: upload, list, delete, (re)index and resync policy documents; list customers.
 
 Files are stored in settings.policy_upload_dir as <doc_id>_<filename> and registered in the policy_documents
 table. Every upload is queued for indexing automatically (api/indexing.py: extract -> chunk -> embed -> Azure
@@ -28,6 +28,7 @@ from .files import safe_name
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/policies", tags=["admin"])
 chat_audit_router = APIRouter(prefix="/admin/chat", tags=["admin"])
+customers_router = APIRouter(prefix="/admin/customers", tags=["admin"])
 POLICY_TYPES = ("home", "auto", "general")
 
 # Allowed extensions and the magic bytes their content must start with.
@@ -206,3 +207,9 @@ def delete_policy(doc_id: str, user: str = Depends(require_admin)):
 def chat_audit(limit: int = 100, _: str = Depends(require_admin)):
     """Restricted (confidential) and blocked policy-chat requests, newest first."""
     return db.get_chat_audit(min(max(limit, 1), 500))
+
+
+@customers_router.get("")
+def list_customers(_: str = Depends(require_admin)):
+    """Customers for the admin list: name, ID, email and phone only (no address, never the password)."""
+    return [{k: c[k] for k in ("id", "name", "email", "phone")} for c in db.list_customers()]

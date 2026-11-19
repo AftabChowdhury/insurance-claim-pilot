@@ -1,6 +1,10 @@
 # Sample claims for the demo
 
-Upload these files in the Streamlit UI with the form values below.
+Submit these files with the form values below via `POST /claims` in the API docs (http://localhost:8000/docs;
+`loss_date` = any past date), then follow the run in the Admin panel → **Claims review** tab (agent timeline,
+letter, adjuster review). The customer **Submit Claim** page only stores claims as `RECEIVED` until the claim check
+is implemented. `loss_type` values for the API: burst pipe = `water_sudden`, flood / rain = `flood`,
+storm / roof = `storm`, vehicle theft = `theft` (all values: `GET /loss-types`).
 
 | Scenario | Policy | Loss type | Amount | Files | Expected |
 |---|---|---|---|---|---|

@@ -7,6 +7,10 @@ LOSS_TYPES: dict[str, tuple[str | None, str]] = {
     "storm": ("home", "Storm / roof damage"),
     "fire": ("home", "Fire / smoke"),
     "theft": ("auto", "Vehicle theft"),
+    "vehicle_damage": ("auto", "Vehicle damage"),
+    "travel": (None, "Travel problem"),          # no travel policy indexed yet: search all policy types
+    "tenant": ("home", "Tenant problem"),        # renters / contents cover is indexed as policy_type home
+    "home_owner": ("home", "Home owner problem"),
     "other": (None, "Other / unclear"),
 }
 

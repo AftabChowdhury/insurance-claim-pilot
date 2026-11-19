@@ -49,7 +49,7 @@ Or one by one: `uv run python -m mcp_servers.claims_server` (8001), `...policy_s
 
 Or with Docker: `docker compose up --build`.
 
-- UI: http://localhost:8501 (Policy Chat, Claims, Admin)
+- UI: http://localhost:8501 (Policy Chat, Submit Claim, My Claims, Admin)
 - API docs: http://localhost:8000/docs
 - Agent graph: http://localhost:8000/graph (Mermaid)
 
@@ -71,13 +71,37 @@ Open the **Admin** page in the UI (http://localhost:8501/admin) and log in with 
   in the policy chat; the chat says the information is confidential instead. The expander *Policy chat –
   restricted and blocked requests* lists what users tried to reach.
 
-API: `POST /admin/login`, then `GET|POST /admin/policies`, `PATCH|DELETE /admin/policies/{doc_id}` with
+- The **🧑‍⚖️ Claims review** tab shows every claim with the agent timeline, letter, coverage, retrieved clauses,
+  evaluation and guardrails, and the adjuster review form when a claim waits for a human decision.
+- The **👥 Customers** tab lists the demo customers (name, customer ID, email, phone) with a search box.
+
+API: `POST /admin/login`, then `GET|POST /admin/policies`, `PATCH|DELETE /admin/policies/{doc_id}`,
+`GET /admin/customers` with `Authorization: Bearer <token>`.
+
+## Submit Claim and My Claims (customers)
+
+Ten fictional customers (`CUST-1001` … `CUST-1010`, `<first>.<last>@example.com`) are seeded into the `customers`
+table of `data/claimpilot.db` on API start; existing claims are linked to them by policy number. Open
+**Submit Claim** (http://localhost:8501/submit-claim) and log in with a customer email and the static demo password `user` (`CUSTOMER_PASSWORD` in `.env`), e.g.
+`emma.schneider@example.com` (policy HO-55821) or `lukas.weber@example.com` (policy AU-20457, suspicious history).
+
+The claim form has Customer ID (prefilled), Loss type, Claimed amount, Description and file upload (`.pdf`, images,
+`.txt`, `.md`, `.docx`; up to 10 files of 10 MB). A submitted claim is stored with status `RECEIVED`, linked to the
+customer and their policy number; **the claim check (agent workflow) does not run yet**.
+
+**My Claims** (same login) lists the customer's claims with their status (Received, In review, Approved, Declined,
+Information needed), payout and decision letter once decided. Internal states (security flag, escalation) are shown
+as "In review".
+
+API: `POST /customer/login`, then `GET /customer/me`, `GET|POST /customer/claims`, `GET /customer/claims/{id}` with
 `Authorization: Bearer <token>`.
 
 ## Demo
 
 Sample documents and form values for four scenarios are in [data/sample_claims/README.md](data/sample_claims/README.md):
 clean auto-approval, evaluator retry (flood exclusion), blocked prompt injection, and adjuster review ($82k theft).
+Until the claim check runs for customer claims, start these with `POST /claims` in http://localhost:8000/docs and
+follow them in Admin → Claims review.
 
 Policy chat: open **Policy Chat** (the default page) and try:
 
@@ -121,5 +145,6 @@ Without it, a regex fallback masks emails, phone numbers, card numbers and IBANs
 
 - OCR for images and scanned PDFs (Azure Document Intelligence) – currently marked `ocr_pending`
 - RAGAS end-to-end evaluation on a labelled set of claims
-- Authentication for the API and the adjuster role
+- Claim check for customer claims (`RECEIVED` → agent workflow)
+- Authentication for the internal `/claims` API (used by Admin → Claims review) and an adjuster role
 - Azure deployment: Container Apps, Azure OpenAI, Azure PostgreSQL (checkpointer + claims DB), Key Vault

@@ -6,7 +6,6 @@ Docs: http://localhost:8000/docs
 import asyncio
 import json
 import logging
-import random
 from contextlib import asynccontextmanager
 from datetime import date
 
@@ -20,7 +19,7 @@ from core import db
 from core.config import get_settings
 from core.domain import LOSS_TYPES, policy_type_for
 
-from . import admin, auth
+from . import admin, auth, customer
 from .chat.graph import build_chat_graph
 from .chat.router import router as chat_router
 from .documents import save_uploads
@@ -57,18 +56,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(admin.chat_audit_router)
+app.include_router(admin.customers_router)
+app.include_router(auth.customer_router)
+app.include_router(customer.router)
 app.include_router(chat_router)
 
 
 def runner(request: Request) -> Runner:
     return request.app.state.runner
-
-
-def new_claim_id() -> str:
-    while True:
-        cid = f"CLM-{random.randint(2000, 9999)}"
-        if not db.get_claim(cid):
-            return cid
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +93,7 @@ async def submit_claim(
     if loss_date > date.today():
         raise HTTPException(422, "loss_date cannot be in the future")
 
-    claim_id = new_claim_id()
+    claim_id = db.new_claim_id()
     docs = await save_uploads(claim_id, files)
     db.create_claim({"id": claim_id, "policy_number": policy_number.strip(), "loss_type": loss_type, "amount": amount,
                      "loss_date": loss_date.isoformat(), "description": description.strip(),

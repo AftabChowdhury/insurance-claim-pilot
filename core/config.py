@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     policy_max_mb: int = 25
     policy_auto_index: bool = True     # index uploads automatically + resync on API start
 
+    # --- Customers (static demo password, tokens signed with admin_token_secret) ---
+    customer_password: str = "user"
+
     # --- Policy extraction (images, scanned pages, .doc) ---
     image_describe: bool = True        # describe figures with the vision model (chat deployment)
     image_min_px: int = 120            # smaller images are icons: skipped

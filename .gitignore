@@ -7,3 +7,4 @@ data/*.db-*
 data/uploads/
 data/policy_uploads/
 PLAN.md
+user_credentials
