@@ -27,9 +27,10 @@ for high-stakes claims.
 | Claim documents: PDF (text layer), `.docx`, `.txt`, `.md` | Implemented (`api/documents.py`) |
 | Claim documents: images and scanned PDFs | **TODO** – marked `ocr_pending`; needs OCR / vision model (Azure Document Intelligence or a multimodal LLM) |
 | Policy chat | **TODO** – no chat endpoint or UI yet; reuse `core/search.py` + `api/graph/retrieval.py` patterns and cite `clause_id`s |
-| Admin panel for policy upload | **TODO** – today policies are loaded via CLI `ingest/ingest_policies.py` from `data/policies/` (`.md`/`.pdf` only) |
+| Admin panel for policy upload | Implemented – Streamlit Admin page + `/admin/policies` (upload `.pdf`/`.doc`/`.docx`, list, delete) storing files in `data/policy_uploads/` |
+| Indexing of admin-uploaded policies | **TODO** – uploads have status `uploaded` in `policy_documents`; only the CLI `ingest/ingest_policies.py` indexes (`data/policies/`, `.md`/`.pdf`) |
 | Policy ingest of `.doc`/`.docx` and embedded images | **TODO** – extend `load_markdown()` in `ingest/ingest_policies.py`; images need OCR/captioning |
-| Authentication / admin vs. user roles | **TODO** |
+| Authentication / admin vs. user roles | Partial – static admin login (`api/auth.py`, HMAC bearer token); claim endpoints are open |
 
 ## Tech stack
 
@@ -52,6 +53,9 @@ api/                FastAPI app
   main.py           Endpoints: /claims, /claims/{id}, /claims/{id}/events (SSE), /claims/{id}/review,
                     /claims/{id}/letter, /claims/{id}/audit, /loss-types, /graph, /health
   documents.py      Upload validation (types, 10 MB, max 10 files) + text extraction
+  auth.py           Static admin login (POST /admin/login) + require_admin bearer-token dependency
+  admin.py          /admin/policies: upload (.pdf/.doc/.docx), list, delete policy documents
+  files.py          safe_name() for uploaded file names
   runner.py         Background graph runs, status (running / awaiting_review / completed / failed)
   mcp_client.py     MCP tool calls with fallback
   graph/            LangGraph workflow
@@ -65,9 +69,10 @@ api/                FastAPI app
 core/               Shared: config (pydantic-settings), llm clients, search, db, domain (loss types)
 ingest/             ingest_policies.py – parse policies into clause chunks and upload to Azure AI Search
 mcp_servers/        claims_server (8001), policy_server (8002), fraud_server (8003)
-ui/app.py           Streamlit UI (submit claim, timeline, adjuster review)
+ui/app.py           Streamlit entrypoint (st.navigation): claims_page.py (submit claim, timeline,
+                    adjuster review) and admin_page.py (login, policy upload/list/delete); common.py api()
 eval/               retrieval_eval.py + testset.json (keyword vs vector vs hybrid vs hybrid+semantic)
-data/               policies/, sample_claims/, fraud_watchlist.json, uploads/ and SQLite DBs (runtime)
+data/               policies/, sample_claims/, fraud_watchlist.json, uploads/, policy_uploads/ and SQLite DBs (runtime)
 ```
 
 ## Claim workflow (LangGraph)
@@ -103,6 +108,7 @@ copy .env.example .env                               # fill OPENAI_API_KEY, AZUR
 uv run python -m ingest.ingest_policies --recreate   # (re)build search index from data/policies/
 uv run python -m ingest.ingest_policies --dry-run    # print chunks only
 .\run_all.ps1                                        # start 3 MCP servers + API + UI in separate windows
+.\stop_all.ps1                                       # stop them all and close their windows
 uv run uvicorn api.main:app --reload --port 8000     # API only (docs: /docs, graph: /graph)
 uv run streamlit run ui/app.py                       # UI only (http://localhost:8501)
 uv run python -m eval.retrieval_eval                 # retrieval comparison
@@ -119,4 +125,4 @@ There is no unit test suite yet; verify changes by running the API/UI and the de
   OpenAI/Azure switch keeps working. Mini model for guardrails, query rewrite and judging.
 - Treat uploaded documents as untrusted: they pass through `guard_input` (injection + PII) before reaching agents.
 - Keep MCP tools usable with fallback (`call_tool_or_fallback`) so the demo runs without the MCP servers.
-- Never commit `.env` or anything under `data/uploads/` or the `*.db` files.
+- Never commit `.env` or anything under `data/uploads/`, `data/policy_uploads/` or the `*.db` files.

@@ -20,6 +20,7 @@ from core import db
 from core.config import get_settings
 from core.domain import LOSS_TYPES, policy_type_for
 
+from . import admin, auth
 from .documents import save_uploads
 from .graph.graph import build_graph
 from .models import ClaimCreated, ClaimView, ReviewDecision
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     s = get_settings()
     s.data_dir.mkdir(parents=True, exist_ok=True)
     s.upload_dir.mkdir(parents=True, exist_ok=True)
+    s.policy_upload_dir.mkdir(parents=True, exist_ok=True)
     db.init_db()
     async with AsyncSqliteSaver.from_conn_string(str(s.checkpoint_path)) as saver:
         app.state.runner = Runner(build_graph(checkpointer=saver))
@@ -42,6 +44,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ClaimPilot API", version="0.1.0", lifespan=lifespan,
               description="Multi-agent insurance claims copilot (LangGraph + Azure AI Search + MCP)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(auth.router)
+app.include_router(admin.router)
 
 
 def runner(request: Request) -> Runner:

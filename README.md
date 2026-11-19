@@ -38,6 +38,7 @@ All services in separate windows:
 
 ```powershell
 .\run_all.ps1
+.\stop_all.ps1   # stop all services and close their windows
 ```
 
 Or one by one: `uv run python -m mcp_servers.claims_server` (8001), `...policy_server` (8002), `...fraud_server` (8003),
@@ -50,6 +51,21 @@ Or with Docker: `docker compose up --build`.
 - Agent graph: http://localhost:8000/graph (Mermaid)
 
 The MCP servers are optional for a run: if one is down, the agents fall back to local calls and say so in the timeline.
+
+## Admin Panel (policy documents)
+
+Open the **Admin** page in the UI (http://localhost:8501/admin) and log in with `Admin` / `admin`
+(change via `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_TOKEN_SECRET` in `.env`).
+
+- Upload one or more policy documents at once: `.pdf`, `.doc`, `.docx` only, up to 25 MB each and 20 per upload.
+  Files whose content does not match the extension, and exact duplicates, are rejected.
+- Files are stored in `data/policy_uploads/` as `<doc_id>_<filename>` and registered in the `policy_documents`
+  table of `data/claimpilot.db` with status `uploaded`.
+- The list shows every uploaded document; delete one (🗑) or several ("Delete selected").
+
+Uploaded documents are **not indexed yet** – parsing and indexing into Azure AI Search come in a later step.
+API: `POST /admin/login`, then `GET|POST /admin/policies`, `DELETE /admin/policies/{doc_id}` with
+`Authorization: Bearer <token>`.
 
 ## Demo
 

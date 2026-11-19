@@ -30,7 +30,21 @@ CREATE TABLE IF NOT EXISTS audit (
     action TEXT NOT NULL,
     detail TEXT
 );
+CREATE TABLE IF NOT EXISTS policy_documents (
+    id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    file_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    uploaded_by TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL
+);
 """
+
+# Audit rows that are not about a claim (admin login, policy uploads) use this pseudo claim id.
+ADMIN_AUDIT_ID = "ADMIN"
 
 # Prior claims used by the fraud agent demo (policy AU-20457 has a suspicious history).
 SEED_CLAIMS = [
@@ -143,3 +157,39 @@ def add_audit(claim_id: str, actor: str, action: str, detail: str = "") -> None:
 def get_audit(claim_id: str) -> list[dict]:
     with connect() as c:
         return [dict(r) for r in c.execute("SELECT * FROM audit WHERE claim_id = ? ORDER BY id", (claim_id,))]
+
+
+# ---------------------------------------------------------------------------
+# Policy documents uploaded from the Admin Panel (files live in settings.policy_upload_dir)
+# ---------------------------------------------------------------------------
+def add_policy_doc(doc: dict) -> dict:
+    with connect() as c:
+        c.execute(
+            "INSERT INTO policy_documents (id, filename, stored_path, file_type, size_bytes, sha256, status,"
+            " uploaded_by, uploaded_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (doc["id"], doc["filename"], doc["stored_path"], doc["file_type"], doc["size_bytes"], doc["sha256"],
+             doc.get("status", "uploaded"), doc["uploaded_by"], now()),
+        )
+    return get_policy_doc(doc["id"])
+
+
+def get_policy_doc(doc_id: str) -> dict | None:
+    with connect() as c:
+        r = c.execute("SELECT * FROM policy_documents WHERE id = ?", (doc_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def find_policy_doc_by_sha(sha256: str) -> dict | None:
+    with connect() as c:
+        r = c.execute("SELECT * FROM policy_documents WHERE sha256 = ?", (sha256,)).fetchone()
+    return dict(r) if r else None
+
+
+def list_policy_docs() -> list[dict]:
+    with connect() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM policy_documents ORDER BY uploaded_at DESC, rowid DESC")]
+
+
+def delete_policy_doc(doc_id: str) -> None:
+    with connect() as c:
+        c.execute("DELETE FROM policy_documents WHERE id = ?", (doc_id,))

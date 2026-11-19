@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     db_path: Path = ROOT / "data" / "claimpilot.db"
     checkpoint_path: Path = ROOT / "data" / "checkpoints.db"
     upload_dir: Path = ROOT / "data" / "uploads"
+    policy_upload_dir: Path = ROOT / "data" / "policy_uploads"
+
+    # --- Admin (static demo login) ---
+    admin_username: str = "Admin"
+    admin_password: str = "admin"
+    admin_token_secret: str = "change-me"
+    admin_token_ttl_minutes: int = 480
+    policy_max_files: int = 20
+    policy_max_mb: int = 25
 
     # --- UI ---
     api_url: str = "http://localhost:8000"
