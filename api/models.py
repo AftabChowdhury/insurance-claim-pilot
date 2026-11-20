@@ -1,7 +1,7 @@
 """Request/response models for the HTTP API."""
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ClaimCreated(BaseModel):
@@ -12,12 +12,20 @@ class ClaimCreated(BaseModel):
 
 
 class ReviewDecision(BaseModel):
-    action: Literal["approve", "edit", "reject"]
-    letter: str | None = Field(None, description="Edited letter text (for approve/edit)")
-    decision: Literal["approve", "deny", "need_info"] | None = None
-    payout: float | None = None
-    reviewer: str = "adjuster"
-    note: str = ""
+    """Admin decision on a paused claim. accept = approve (payout / letter editable); reject = deny with a reason the
+    customer sees; release = security-flagged claim goes through the normal check (flagged content withheld).
+    approve / edit are accepted as aliases of accept."""
+    action: Literal["accept", "reject", "release", "approve", "edit"]
+    reason: str = Field("", max_length=1000, description="Customer-facing reason (required for reject)")
+    letter: str | None = Field(None, max_length=10_000, description="Edited decision letter (optional)")
+    payout: float | None = Field(None, ge=0)
+    note: str = Field("", max_length=1000, description="Internal note for the audit log")
+
+    @model_validator(mode="after")
+    def _reason_for_reject(self):
+        if self.action == "reject" and len(self.reason.strip()) < 5:
+            raise ValueError("A reason (at least 5 characters) is required to reject a claim")
+        return self
 
 
 class ClaimView(BaseModel):
@@ -38,3 +46,6 @@ class ClaimView(BaseModel):
     human: dict | None = None
     final: dict | None = None
     retries: int = 0
+    evidence: list[dict] = []
+    evidence_summary: dict | None = None
+    auto_decision: str | None = None

@@ -31,6 +31,40 @@ def api(method: str, path: str, *, quiet_status: tuple[int, ...] = (), **kw):
     return r.json() if "json" in r.headers.get("content-type", "") else r.text
 
 
+def eur(amount) -> str:
+    """Amount in euro for display, e.g. '5,000 €' ('—' if missing)."""
+    return "—" if amount is None else f"{float(amount):,.0f} €"
+
+
+# ---------------------------------------------------------------------------
+# Admin session (Admin page + Claims review tab)
+# ---------------------------------------------------------------------------
+def admin_logout(message: str | None = None) -> None:
+    for k in ("admin_token", "admin_user", "confirm_delete"):
+        st.session_state.pop(k, None)
+    if message:
+        st.session_state.login_message = message
+    st.rerun()
+
+
+def admin_api(method: str, path: str, **kw):
+    """API call with the admin token; an expired/invalid token sends the user back to the login form."""
+    headers = {"Authorization": f"Bearer {st.session_state.admin_token}"}
+    r = api(method, path, headers=headers, quiet_status=(401,), **kw)
+    if hasattr(r, "status_code"):  # 401
+        admin_logout("Your session has expired. Please log in again.")
+    return r
+
+
+def admin_file(path: str) -> bytes | None:
+    """Raw bytes of an admin-only file (e.g. a claim photo)."""
+    try:
+        r = requests.get(API + path, headers={"Authorization": f"Bearer {st.session_state.admin_token}"}, timeout=30)
+    except requests.ConnectionError:
+        return None
+    return r.content if r.ok else None
+
+
 # ---------------------------------------------------------------------------
 # Customer session, shared by the Submit Claim and My Claims pages
 # ---------------------------------------------------------------------------

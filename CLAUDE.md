@@ -25,7 +25,7 @@ for high-stakes claims.
 |---|---|
 | Claim submission + multi-agent decision | Implemented (`POST /claims`, LangGraph in `api/graph/`) |
 | Claim documents: PDF (text layer), `.docx`, `.txt`, `.md` | Implemented (`api/documents.py`) |
-| Claim documents: images and scanned PDFs | **TODO** – marked `ocr_pending`; needs OCR / vision model (Azure Document Intelligence or a multimodal LLM) |
+| Claim documents: images and scanned PDFs | Implemented (testing) – images validated + fingerprinted at upload (`api/evidence.py`), checked in the `verify_evidence` node (`api/graph/evidence.py`: reuse, EXIF, vision model, consistency); scanned PDFs OCR'd by the vision model |
 | Policy chat | Implemented – LangGraph in `api/chat/`, `/chat` + `/chat/stream`, Streamlit Policy Chat page; evaluator + retry/regenerate; see `features/POLICY_CHAT.md` |
 | Confidential policy documents | Implemented – Admin 🔒 flag (upload + `PATCH /admin/policies/{id}`), index field `confidential`; the chat never returns them (filter + post-filter + score-only probe + leak check); see `features/POLICY_CHAT.md` §1–2 |
 | Admin panel for policy upload | Implemented – Streamlit Admin page + `/admin/policies` (upload `.pdf`/`.doc`/`.docx`, list, delete, confidential toggle) storing files in `data/policy_uploads/` |
@@ -33,10 +33,10 @@ for high-stakes claims.
 | Chunking of policy documents | Implemented – `ingest/structure.py` + `ingest/chunking.py` (clause-based, token limits); CLI `uv run python -m ingest.chunking` |
 | Embedding / indexing of policies | Implemented – `ingest/indexer.py` + `ingest/pipeline.py`; built-in policies via `ingest/ingest_policies.py`; admin delete removes chunks |
 | Automatic indexing after admin upload + resync | Implemented – background worker `api/indexing.py` (queue, resync on API start), Admin page status / re-index / resync / chunk preview (`features/SAVE_IN_VECTOR_DB.md` §4.3) |
-| Customers + customer claim form | Implemented – seeded `customers` table (`core/db.py`, claims linked by policy number), admin Customers tab + `GET /admin/customers`, customer login (email + static password `user`), Submit Claim + My Claims pages and `/customer/claims`; claims stored as `RECEIVED` with `customer_id`; customers see a reduced status (security / escalation states shown as "in review") |
-| Claims review (agent timeline + adjuster review) | Admin panel tab (`ui/claims_review.py`); the old public Claims page was removed. The workflow is started via `POST /claims` (e.g. from `/docs`) until the claim check runs for customer claims |
-| Claim check for customer claims | **TODO** – customer claims do not start the LangGraph workflow yet |
-| Authentication / admin vs. user roles | Partial – static admin and customer logins (`api/auth.py`, HMAC bearer token with `role` admin/customer); internal claim and chat endpoints are open (chat users always get `access="public"`) |
+| Customers + customer claim form | Implemented – seeded `customers` table (`core/db.py`, claims linked by policy number), admin Customers tab + `GET /admin/customers`, customer login (email + static password `user`), Submit Claim + My Claims (claim history) pages and `/customer/claims`; customers see a reduced status (security / review states shown as "in review") |
+| Claims review (agent timeline + admin review) | Admin panel tab (`ui/claims_review.py`): waiting claims first, evidence tab, Accept / Reject (reason shown to the customer), Release for security-flagged claims |
+| Claim check for customer claims | Implemented (testing) – `POST /customer/claims` starts the workflow (`api/claim_flow.py`, startup resume); automatic approve / deny ≤ `HITL_PAYOUT_THRESHOLD` (5,000 €), admin review otherwise |
+| Authentication / admin vs. user roles | Partial – static admin and customer logins (`api/auth.py`, HMAC bearer token with `role` admin/customer); internal `/claims*` endpoints require the admin token; chat endpoints are open (chat users always get `access="public"`) |
 
 ## Tech stack
 
@@ -58,11 +58,13 @@ for high-stakes claims.
 api/                FastAPI app
   main.py           Endpoints: /claims, /claims/{id}, /claims/{id}/events (SSE), /claims/{id}/review,
                     /claims/{id}/letter, /claims/{id}/audit, /loss-types, /graph, /health
-  documents.py      Upload validation (types, 10 MB, max 10 files) + text extraction
+  documents.py      Upload validation (types, 10 MB, max 10 files) + text extraction; images via evidence.py
+  evidence.py       Claim images, step A: real-image check, sha256 + dHash, EXIF / AI markers, sanitised copy
+  claim_flow.py     initial_state + start_check (CHECKING) for a stored claim; resume_pending on API start
   auth.py           Static admin + customer logins (POST /admin/login, /customer/login); require_admin /
                     require_customer bearer-token dependencies (token role admin | customer)
-  customer.py       /customer/me, POST|GET /customer/claims, GET /customer/claims/{id} (own claims only; claim
-                    request stored as RECEIVED, no claim check yet; customer-facing status + letter once decided)
+  customer.py       /customer/me, POST|GET /customer/claims, GET /customer/claims/{id} (own claims only; submit
+                    starts the claim check, rate limited; customer-facing status + reason + letter once decided)
   admin.py          /admin/policies: upload (.pdf/.doc/.docx), list, delete, resync, re-index, chunk preview,
                     PATCH confidential flag; /admin/chat/audit (restricted / blocked chat requests);
                     GET /admin/customers
@@ -73,10 +75,12 @@ api/                FastAPI app
   graph/            LangGraph workflow
     graph.py        Graph wiring (see diagram in module docstring)
     state.py        ClaimState TypedDict + event() helper for the UI timeline
+    evidence.py     verify_evidence node: image reuse / metadata / vision / consistency checks, scanned-PDF OCR
     agents.py       intake, coverage, fraud, writer, evaluator agents + retry routing
     retrieval.py    rewrite_query → hybrid_search → semantic_rank → build_context
-    guardrails.py   input (injection, PII) and output policy checks
-    human.py        interrupt() for adjuster review, close_claim
+    guardrails.py   input (normalised text, injection incl. file names + image text, PII); output policy checks +
+                    decision rules (auto approve / deny / need_info vs. admin review)
+    human.py        interrupt() for admin review (accept / reject / release), close_claim (status, reason, letter)
     prompts.py, schemas.py
   chat/             Policy-chat LangGraph (see features/POLICY_CHAT.md)
     graph.py        guard_input → rewrite_query → [hybrid_search ∥ confidential_probe] → semantic_rank →
@@ -111,13 +115,15 @@ data/               policies/, sample_claims/, fraud_watchlist.json, uploads/, p
 ## Claim workflow (LangGraph)
 
 ```
-guard_input ─(blocked)→ close_claim
+verify_evidence → guard_input ─(blocked)→ human_review (security: reject | release → intake_agent)
   → intake_agent → rewrite_query → hybrid_search → semantic_rank → build_context
   → [coverage_agent ∥ fraud_agent] → writer_agent → evaluator_agent
       ─(score < EVAL_THRESHOLD, retries left)→ prepare_retry → rewrite_query
-  → guard_output ─(payout > HITL_PAYOUT_THRESHOLD or fraud ≥ FRAUD_REVIEW_THRESHOLD)→ human_review
+  → guard_output ─(amount/payout > HITL_PAYOUT_THRESHOLD, fraud ≥ FRAUD_REVIEW_THRESHOLD, suspicious evidence,
+                   violations …)→ human_review (admin accept / reject)
   → close_claim → END
 ```
+The final status comes from code (`guard_output` decision rules, `close_claim`) or the admin, never from an LLM.
 
 Nodes return partial state updates; append UI timeline entries with `event(node, message, status)`.
 The claims workflow searches with `access="all"` because it is internal. Confidential clauses are labelled in the

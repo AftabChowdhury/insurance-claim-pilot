@@ -4,11 +4,12 @@ from datetime import date
 
 from core import db
 from core.config import get_settings
-from core.domain import label_for
+from core.domain import label_for, money
 from core.llm import structured
 
 from ..mcp_client import call_tool_or_fallback
 from . import prompts
+from .evidence import SIGNALS, evidence_for_prompt
 from .schemas import ClaimFacts, CoverageDecision, DecisionLetter, FraudAssessment, Judgement
 from .state import ClaimState, event
 
@@ -39,10 +40,10 @@ async def intake_agent(state: ClaimState) -> dict:
 # ---------------------------------------------------------------------------
 async def coverage_agent(state: ClaimState) -> dict:
     out: CoverageDecision = await structured(CoverageDecision).ainvoke(prompts.COVERAGE.format(
-        claim=json.dumps(state["claim"], indent=2), context=state["context"]))
+        claim=json.dumps(state["claim"], indent=2), evidence=evidence_for_prompt(state), context=state["context"]))
     cov = out.model_dump()
     if out.covered == "yes":
-        msg = f"Covered under {', '.join(out.applicable_clauses) or '?'} · payable ${out.payable_amount:,.0f}"
+        msg = f"Covered under {', '.join(out.applicable_clauses) or '?'} · payable {money(out.payable_amount)}"
     elif out.covered == "no":
         msg = f"Not covered · exclusions {', '.join(out.exclusions_applied) or '—'}"
     else:
@@ -55,9 +56,9 @@ def _rule_fraud_score(state: ClaimState, history: list[dict], watch: list[str]) 
     score, signals = 0.05, []
     amount = float(state.get("amount") or 0)
     if amount > 50_000:
-        score += 0.3; signals.append("High claim amount (> $50,000)")
+        score += 0.3; signals.append(f"High claim amount (> {money(50_000)})")
     elif amount > 20_000:
-        score += 0.1; signals.append("Claim amount above $20,000")
+        score += 0.1; signals.append(f"Claim amount above {money(20_000)}")
     recent = [h for h in history if (h.get("loss_date") or "") >= f"{date.today().year - 2}"]
     if len(recent) >= 3:
         score += 0.25; signals.append(f"{len(recent)} claims in the last 2 years")
@@ -65,6 +66,11 @@ def _rule_fraud_score(state: ClaimState, history: list[dict], watch: list[str]) 
         score += 0.25; signals += watch
     if len(state.get("documents", [])) < 2:
         score += 0.1; signals.append("Fewer than 2 supporting documents")
+    # Image evidence signals (verify_evidence): each signal type counts once, with its weight.
+    codes = (state.get("evidence_summary") or {}).get("signal_codes", [])
+    if codes:
+        score += sum(SIGNALS[c][0] for c in codes if c in SIGNALS)
+        signals += [f"Evidence: {x}" for x in (state.get("evidence_summary") or {}).get("signals", [])[:5]]
     return min(score, 0.95), signals
 
 
@@ -82,7 +88,8 @@ async def fraud_agent(state: ClaimState) -> dict:
     rule_score, rule_signals = _rule_fraud_score(state, history_list, watch_list)
     out: FraudAssessment = await structured(FraudAssessment, mini=True).ainvoke(prompts.FRAUD.format(
         rule_score=round(rule_score, 2), claim=json.dumps(state["claim"], indent=2),
-        history=json.dumps(history_list, indent=2) or "none", watchlist=json.dumps(watch_list) or "none"))
+        history=json.dumps(history_list, indent=2) or "none", watchlist=json.dumps(watch_list) or "none",
+        evidence=evidence_for_prompt(state)))
 
     risk = round(max(rule_score, out.risk_score), 2)  # never lower than the deterministic rules
     signals = list(dict.fromkeys(rule_signals + out.signals))
@@ -102,7 +109,7 @@ async def writer_agent(state: ClaimState) -> dict:
         coverage=json.dumps(state["coverage"], indent=2),
         context=state.get("public_context") or state["context"]))
     return {"letter": out.model_dump(),
-            **event("writer_agent", f"Draft: {out.decision} · ${out.payout:,.0f} · {len(out.citations)} citation(s)",
+            **event("writer_agent", f"Draft: {out.decision} · {money(out.payout)} · {len(out.citations)} citation(s)",
                     decision=out.decision, payout=out.payout)}
 
 

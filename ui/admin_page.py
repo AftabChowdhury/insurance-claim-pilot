@@ -6,7 +6,7 @@ from pathlib import Path
 import streamlit as st
 
 from claims_review import claims_review
-from common import api
+from common import admin_api, admin_logout, api
 
 ALLOWED_TYPES = ["pdf", "doc", "docx"]
 POLICY_TYPES = {"Detect from document": "", "Home": "home", "Auto": "auto", "General": "general"}
@@ -18,21 +18,7 @@ STATUS_BADGE = {
 ACTIVE = ("queued", "processing")
 
 
-def logout(message: str | None = None) -> None:
-    for k in ("admin_token", "admin_user", "confirm_delete"):
-        st.session_state.pop(k, None)
-    if message:
-        st.session_state.login_message = message
-    st.rerun()
-
-
-def admin_api(method: str, path: str, **kw):
-    """API call with the admin token; an expired/invalid token sends the user back to the login form."""
-    headers = {"Authorization": f"Bearer {st.session_state.admin_token}"}
-    r = api(method, path, headers=headers, quiet_status=(401,), **kw)
-    if hasattr(r, "status_code"):  # 401
-        logout("Your session has expired. Please log in again.")
-    return r
+logout = admin_logout
 
 
 def human_size(n: int) -> str:
@@ -70,7 +56,10 @@ top_l.caption(f"Logged in as **{st.session_state.get('admin_user', 'admin')}**")
 if top_r.button("Log out", use_container_width=True):
     logout()
 
-tab_docs, tab_claims, tab_customers = st.tabs(["📄 Policy documents", "🧑‍⚖️ Claims review", "👥 Customers"])
+_waiting = sum(len(admin_api("GET", f"/claims?status={s}&limit=200") or [])
+               for s in ("AWAITING_REVIEW", "FLAGGED_SECURITY"))
+tab_docs, tab_claims, tab_customers = st.tabs(
+    ["📄 Policy documents", f"🧑‍⚖️ Claims review ({_waiting} waiting)", "👥 Customers"])
 
 # ---------------------------------------------------------------------------
 # Claims review and Customers (rendered first: the documents tab below may st.stop() early)

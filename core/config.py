@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     semantic_config: str = "claimpilot-semantic"
 
     # --- Workflow rules ---
-    hitl_payout_threshold: float = 10_000
+    hitl_payout_threshold: float = 5_000   # EUR: claimed amount or payout above -> admin review
     fraud_review_threshold: float = 0.7
     eval_threshold: float = 0.8
     max_retries: int = 2
@@ -70,6 +70,16 @@ class Settings(BaseSettings):
 
     # --- Customers (static demo password, tokens signed with admin_token_secret) ---
     customer_password: str = "user"
+    customer_claims_per_hour: int = 5  # claim submissions per customer per hour (429 above)
+
+    # --- Claim evidence (images, scanned PDFs; vision model = the chat deployment) ---
+    claim_vision: bool = True           # analyse claim images / OCR scanned PDFs with the vision model
+    claim_images_max: int = 10          # vision calls per claim (cost guard)
+    claim_image_max_side: int = 2048    # sanitised copy sent to the vision model (px)
+    claim_image_min_px: int = 200       # smaller images are not accepted as evidence
+    claim_image_max_mpx: int = 40       # decompression-bomb guard (megapixels)
+    image_duplicate_distance: int = 6   # perceptual-hash Hamming distance that counts as the same photo
+    claim_pdf_ocr_max_pages: int = 5    # pages of a scanned claim PDF that are OCR'd
 
     # --- Policy extraction (images, scanned pages, .doc) ---
     image_describe: bool = True        # describe figures with the vision model (chat deployment)

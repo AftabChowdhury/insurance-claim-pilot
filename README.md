@@ -98,10 +98,10 @@ API: `POST /customer/login`, then `GET /customer/me`, `GET|POST /customer/claims
 
 ## Demo
 
-Sample documents and form values for four scenarios are in [data/sample_claims/README.md](data/sample_claims/README.md):
-clean auto-approval, evaluator retry (flood exclusion), blocked prompt injection, and adjuster review ($82k theft).
-Until the claim check runs for customer claims, start these with `POST /claims` in http://localhost:8000/docs and
-follow them in Admin → Claims review.
+Sample documents and form values are in [data/sample_claims/README.md](data/sample_claims/README.md): automatic
+approval, automatic denial (flood exclusion), admin review over 5,000 €, prompt injection (security review) and a
+high fraud risk. Submit them as a customer on **Submit Claim**, follow them on **My Claims** and decide in
+Admin → Claims review.
 
 Policy chat: open **Policy Chat** (the default page) and try:
 

@@ -44,6 +44,18 @@ CREATE TABLE IF NOT EXISTS policy_documents (
     uploaded_by TEXT NOT NULL,
     uploaded_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS claim_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    dhash TEXT NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    exif TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE (claim_id, name)
+);
 CREATE TABLE IF NOT EXISTS customers (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -59,6 +71,7 @@ CREATE TABLE IF NOT EXISTS customers (
 # Columns added to the claims table of existing databases by init_db().
 CLAIM_COLUMNS = {
     "customer_id": "TEXT",       # set for claims submitted by a logged-in customer
+    "decision_reason": "TEXT",   # short customer-facing reason of the decision (auto or admin)
 }
 
 # Indexing state of policy documents, added to existing databases by init_db().
@@ -249,6 +262,67 @@ def update_status(claim_id: str, status: str, payout: float | None = None,
         )
     add_audit(claim_id, decided_by, f"status:{status}", note)
     return get_claim(claim_id)
+
+
+def set_status(claim_id: str, status: str, actor: str = "claimpilot", note: str = "") -> None:
+    """Interim status (CHECKING, AWAITING_REVIEW, FLAGGED_SECURITY) without touching payout / decided_by."""
+    with connect() as c:
+        c.execute("UPDATE claims SET status = ?, updated_at = ? WHERE id = ?", (status, now(), claim_id))
+    add_audit(claim_id, actor, f"status:{status}", note)
+
+
+def save_decision_reason(claim_id: str, reason: str) -> None:
+    with connect() as c:
+        c.execute("UPDATE claims SET decision_reason = ?, updated_at = ? WHERE id = ?", (reason, now(), claim_id))
+
+
+def count_claims_since(customer_id: str, since_iso: str) -> int:
+    with connect() as c:
+        return c.execute("SELECT COUNT(*) FROM claims WHERE customer_id = ? AND created_at >= ?",
+                         (customer_id, since_iso)).fetchone()[0]
+
+
+def claims_to_resume() -> list[dict]:
+    """Customer claims whose claim check has not finished (startup resync)."""
+    with connect() as c:
+        rows = c.execute("SELECT * FROM claims WHERE customer_id IS NOT NULL AND status IN ('RECEIVED', 'CHECKING')"
+                         " ORDER BY created_at").fetchall()
+    return [_row(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Claim evidence (image fingerprints for duplicate / reuse detection)
+# ---------------------------------------------------------------------------
+def save_evidence(claim_id: str, name: str, sha256: str, dhash: str, width: int, height: int, exif: dict) -> None:
+    with connect() as c:
+        # On re-processing (restart) keep the original upload time: reuse detection compares by upload order.
+        c.execute("INSERT INTO claim_evidence (claim_id, name, sha256, dhash, width, height, exif, created_at)"
+                  " VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (claim_id, name) DO UPDATE SET sha256 = excluded.sha256,"
+                  " dhash = excluded.dhash, width = excluded.width, height = excluded.height, exif = excluded.exif",
+                  (claim_id, name, sha256, dhash, width, height, json.dumps(exif, default=str), now()))
+
+
+def delete_evidence(claim_id: str) -> None:
+    with connect() as c:
+        c.execute("DELETE FROM claim_evidence WHERE claim_id = ?", (claim_id,))
+
+
+def find_similar_images(sha256: str, dhash: str, exclude_claim_id: str, max_distance: int) -> list[dict]:
+    """Images uploaded earlier with other claims that are identical (sha256) or look the same (dHash Hamming
+    distance). Only earlier uploads count, so the original claim is not flagged when its photo is reused later."""
+    target = int(dhash, 16)
+    with connect() as c:
+        rows = c.execute("SELECT e.claim_id, e.name, e.sha256, e.dhash, c.customer_id FROM claim_evidence e"
+                         " LEFT JOIN claims c ON c.id = e.claim_id WHERE e.claim_id != ? AND e.created_at <="
+                         " COALESCE((SELECT MIN(created_at) FROM claim_evidence WHERE claim_id = ?), e.created_at)",
+                         (exclude_claim_id, exclude_claim_id)).fetchall()
+    out = []
+    for r in rows:
+        distance = 0 if r["sha256"] == sha256 else bin(target ^ int(r["dhash"], 16)).count("1")
+        if distance <= max_distance:
+            out.append({"claim_id": r["claim_id"], "name": r["name"], "customer_id": r["customer_id"],
+                        "distance": distance, "exact": r["sha256"] == sha256})
+    return sorted(out, key=lambda x: x["distance"])
 
 
 def save_letter(claim_id: str, letter: str) -> None:

@@ -16,6 +16,8 @@ LOSS_TYPES: dict[str, tuple[str | None, str]] = {
 
 # Final claim statuses written to the claims system
 STATUS_RECEIVED = "RECEIVED"
+STATUS_CHECKING = "CHECKING"                # claim check (agent workflow) running
+STATUS_AWAITING_REVIEW = "AWAITING_REVIEW"  # paused for the admin (human in the loop)
 STATUS_APPROVED = "APPROVED"
 STATUS_DENIED = "DENIED"
 STATUS_PENDING_INFO = "PENDING_INFO"
@@ -35,3 +37,11 @@ def policy_type_for(loss_type: str) -> str | None:
 
 def label_for(loss_type: str) -> str:
     return LOSS_TYPES.get(loss_type, (None, loss_type))[1]
+
+
+CURRENCY = "€"
+
+
+def money(amount: float | None) -> str:
+    """Format an amount in euro for messages and letters, e.g. '5,000 €'."""
+    return f"{float(amount or 0):,.0f} {CURRENCY}"
