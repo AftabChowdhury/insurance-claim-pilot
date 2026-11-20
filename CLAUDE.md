@@ -19,6 +19,9 @@ The emphasis is on trustworthy answers: advanced RAG with hybrid search + semant
 an LLM evaluator with retry, guardrails (prompt injection, PII, output policy), and human-in-the-loop review
 for high-stakes claims.
 
+High-level architecture (diagram + overview document): `architecture/` – keep it in sync when components, agents
+or data stores change.
+
 ## Current status vs. goal
 
 | Capability | Status |
@@ -111,6 +114,8 @@ ui/app.py           Streamlit entrypoint (st.navigation): chat_page.py (default;
 eval/               retrieval_eval.py + testset.json (keyword vs vector vs hybrid vs hybrid+semantic);
                     chat_eval.py + chat_testset.json (answers, citations, confidential leaks, injection)
 data/               policies/, sample_claims/, fraud_watchlist.json, uploads/, policy_uploads/ and SQLite DBs (runtime)
+architecture/       claimpilot_architecture.png / .svg (high-level diagram) and ClaimPilot_High_Level_Architecture.docx
+                    (extraction, clause structure, retrieval, agents, evaluator, eval, MCP, SQLite schema changes)
 ```
 
 ## Claim workflow (LangGraph)
