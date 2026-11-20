@@ -256,7 +256,7 @@ fallback.
 ## 8. Commands and verification
 
 ```powershell
-uv run python -m ingest.ingest_policies      # adds the confidential field, indexes the demo confidential doc
+uv run python -m ingest.ingest_policies --builtin  # adds the confidential field, indexes the demo confidential doc
 uv run python -m eval.chat_eval              # end-to-end chat evaluation (add -v to print answers, --only <id>)
 uv run python -m ingest.pipeline --pending   # also repairs confidential-flag drift
 ```

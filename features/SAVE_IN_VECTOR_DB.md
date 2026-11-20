@@ -53,7 +53,7 @@ Every format produces chunks with the same shape, so retrieval does not need to 
 | `ingest/chunking.py` | Token-based, clause-aware chunker; CLI `python -m ingest.chunking` |
 | `ingest/indexer.py` | Index schema, `ensure_index()`, embedding with retry, upsert, deletes by `doc_id` |
 | `ingest/pipeline.py` | `index_policy_file()`, `process_policy_doc()`, `documents_to_index()`; CLI `python -m ingest.pipeline` |
-| `ingest/ingest_policies.py` | Indexes built-in policies in `data/policies/` through the same pipeline |
+| `ingest/ingest_policies.py` | Creates / rebuilds the index and syncs admin uploads; indexes `data/policies/` only with `--builtin` |
 | `api/indexing.py` | `IndexWorker`: async queue in the API process; resync on startup |
 | `api/admin.py` | Upload queues the file for indexing; re-index, resync, chunk preview and delete (which also removes chunks) |
 | `core/db.py` | Columns in `policy_documents` that track indexing state |
@@ -429,10 +429,11 @@ uv run python -m ingest.extract --doc-id 3f2a9c1b7e44               # an admin-u
 uv run python -m ingest.chunking path\to\policy.pdf --show            # add --no-vision to skip the vision model
 uv run python -m ingest.chunking --doc-id 3f2a9c1b7e44
 
-# built-in policies in data/policies/
-uv run python -m ingest.ingest_policies              # create/update index, re-index every file
-uv run python -m ingest.ingest_policies --recreate   # drop and rebuild the index, then re-index uploads
-uv run python -m ingest.ingest_policies --dry-run    # print chunks only
+# index create / rebuild (admin uploads only; data/policies/ is skipped unless --builtin is given)
+uv run python -m ingest.ingest_policies                      # create/update index, sync admin uploads
+uv run python -m ingest.ingest_policies --recreate           # drop and rebuild the index, then re-index uploads
+uv run python -m ingest.ingest_policies --builtin            # also (re)index every file in data/policies/
+uv run python -m ingest.ingest_policies --builtin --dry-run  # print the built-in chunks only
 
 # admin uploads without the API
 uv run python -m ingest.pipeline --pending           # resync: new, failed, outdated, missing

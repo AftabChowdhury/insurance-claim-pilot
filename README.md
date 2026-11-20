@@ -29,7 +29,8 @@ uv sync
 copy .env.example .env   # then fill in OPENAI_API_KEY and AZURE_SEARCH_KEY
 ```
 
-Load the sample policies into Azure AI Search (creates the index with vector + semantic configuration):
+Create the Azure AI Search index (vector + semantic configuration). Only policies uploaded in the Admin panel are
+indexed; the sample policies in `data/policies/` are skipped unless you add `--builtin`:
 
 ```powershell
 uv run python -m ingest.ingest_policies --recreate

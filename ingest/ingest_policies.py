@@ -1,9 +1,12 @@
-"""Index the built-in policies in data/policies/ into Azure AI Search, with the same pipeline as admin uploads.
+"""Create / rebuild the Azure AI Search index and sync the admin-uploaded policies into it.
+
+Only admin uploads are indexed by default. The built-in policies in data/policies/ are indexed only with --builtin.
 
 Usage:
-    uv run python -m ingest.ingest_policies            # create/update index, (re)index every file
-    uv run python -m ingest.ingest_policies --recreate # drop and rebuild the index; uploads are re-indexed after
-    uv run python -m ingest.ingest_policies --dry-run  # only print the chunks (no vision, no upload)
+    uv run python -m ingest.ingest_policies                      # create/update index, sync admin uploads
+    uv run python -m ingest.ingest_policies --recreate           # drop and rebuild the index, re-index admin uploads
+    uv run python -m ingest.ingest_policies --builtin            # also (re)index every file in data/policies/
+    uv run python -m ingest.ingest_policies --builtin --dry-run  # only print the built-in chunks (no upload)
 
 Files: .md, .pdf, .docx, .doc in data/policies/. Structure expected (see ingest/structure.py for the general rules):
     ## Section 4 – Covered Perils          -> section (parent)
@@ -33,7 +36,9 @@ def builtin_doc_id(path: Path) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--recreate", action="store_true", help="delete and rebuild the index first")
-    ap.add_argument("--dry-run", action="store_true", help="print chunks only")
+    ap.add_argument("--builtin", action="store_true",
+                    help="also index the built-in policies in data/policies/ (off by default: admin uploads only)")
+    ap.add_argument("--dry-run", action="store_true", help="print the built-in chunks only (with --builtin)")
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -41,7 +46,9 @@ def main() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
     s = get_settings()
 
-    files = sorted(p for p in (s.data_dir / "policies").glob("*") if p.suffix.lower() in SUPPORTED_EXTENSIONS)
+    files = sorted(p for p in (s.data_dir / "policies").glob("*") if p.suffix.lower() in SUPPORTED_EXTENSIONS)         if args.builtin else []
+    if args.dry_run and not args.builtin:
+        ap.error("--dry-run prints built-in chunks; use it with --builtin")
     work_root = s.policy_upload_dir / "_builtin"
 
     if args.dry_run:
@@ -62,6 +69,8 @@ def main() -> None:
     if not args.recreate and (n := delete_legacy_chunks()):
         print(f"Removed {n} chunks written by the old ingest")
 
+    if not args.builtin:
+        print("Skipping data/policies/ (built-in policies are not indexed; pass --builtin to include them)")
     total = 0
     for f in files:
         result = asyncio.run(index_policy_file(f, builtin_doc_id(f), work_root / f.name.replace(".", "_"),
@@ -69,7 +78,8 @@ def main() -> None:
         total += result["chunks"]
         print(f"  {f.name}: {result['chunks']} chunks [{result['policy_type']}], "
               f"stale removed={result['deleted_stale']}")
-    print(f"Uploaded {total} chunks from {len(files)} file(s)")
+    if files:
+        print(f"Uploaded {total} chunks from {len(files)} built-in file(s)")
 
     # bring admin-uploaded documents back in sync (needed after --recreate; a no-op otherwise)
     db.init_db()

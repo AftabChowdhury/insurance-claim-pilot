@@ -31,10 +31,10 @@ for high-stakes claims.
 | Admin panel for policy upload | Implemented – Streamlit Admin page + `/admin/policies` (upload `.pdf`/`.doc`/`.docx`, list, delete, confidential toggle) storing files in `data/policy_uploads/` |
 | Extraction of policy documents (`.pdf`/`.docx`/`.doc`/`.md`, images, workflow diagrams, scanned pages) | Implemented – `ingest/extract/` + `ingest/figures.py` (vision model = chat deployment); CLI `uv run python -m ingest.extract`; see `features/SAVE_IN_VECTOR_DB.md` §1 |
 | Chunking of policy documents | Implemented – `ingest/structure.py` + `ingest/chunking.py` (clause-based, token limits); CLI `uv run python -m ingest.chunking` |
-| Embedding / indexing of policies | Implemented – `ingest/indexer.py` + `ingest/pipeline.py`; built-in policies via `ingest/ingest_policies.py`; admin delete removes chunks |
+| Embedding / indexing of policies | Implemented – `ingest/indexer.py` + `ingest/pipeline.py`; built-in policies only via `ingest_policies --builtin` (default: admin uploads only); admin delete removes chunks |
 | Automatic indexing after admin upload + resync | Implemented – background worker `api/indexing.py` (queue, resync on API start), Admin page status / re-index / resync / chunk preview (`features/SAVE_IN_VECTOR_DB.md` §4.3) |
 | Customers + customer claim form | Implemented – seeded `customers` table (`core/db.py`, claims linked by policy number), admin Customers tab + `GET /admin/customers`, customer login (email + static password `user`), Submit Claim + My Claims (claim history) pages and `/customer/claims`; customers see a reduced status (security / review states shown as "in review") |
-| Claims review (agent timeline + admin review) | Admin panel tab (`ui/claims_review.py`): waiting claims first, evidence tab, Accept / Reject (reason shown to the customer), Release for security-flagged claims |
+| Claims review (agent timeline + admin review) | Admin panel tab (`ui/claims_review.py`): waiting claims first, evidence tab, Accept / Reject (reason shown to the customer), Release for security-flagged claims; see `features/CLAIM_REVIEW.md` |
 | Claim check for customer claims | Implemented (testing) – `POST /customer/claims` starts the workflow (`api/claim_flow.py`, startup resume); automatic approve / deny ≤ `HITL_PAYOUT_THRESHOLD` (5,000 €), admin review otherwise |
 | Authentication / admin vs. user roles | Partial – static admin and customer logins (`api/auth.py`, HMAC bearer token with `role` admin/customer); internal `/claims*` endpoints require the admin token; chat endpoints are open (chat users always get `access="public"`) |
 
@@ -93,7 +93,8 @@ api/                FastAPI app
 core/               Shared: config (pydantic-settings), llm clients, search (access levels), rag (shared
                     merge/rank/context helpers), db (claims, audit, policy docs, customers + seed data),
                     domain (loss types)
-ingest/             ingest_policies.py – index data/policies/ with the shared pipeline (doc_id builtin-<stem>)
+ingest/             ingest_policies.py – create / rebuild the index + sync admin uploads; data/policies/ only with
+                    --builtin (doc_id builtin-<stem>); by default only admin uploads are indexed
   pipeline.py       extract → describe → chunk → embed → index; process_policy_doc(doc_id) for uploads
   indexer.py        index schema, batched embedding with retry, upsert / delete chunks by doc_id
   extract/          policy file → ExtractedDocument (ordered blocks: heading/paragraph/list/table/figure);
@@ -124,6 +125,7 @@ verify_evidence → guard_input ─(blocked)→ human_review (security: reject |
   → close_claim → END
 ```
 The final status comes from code (`guard_output` decision rules, `close_claim`) or the admin, never from an LLM.
+Which agent does what, the decision rules and the admin review: `features/CLAIM_REVIEW.md`.
 
 Nodes return partial state updates; append UI timeline entries with `event(node, message, status)`.
 The claims workflow searches with `access="all"` because it is internal. Confidential clauses are labelled in the
@@ -164,8 +166,8 @@ the same chunk shape so retrieval keeps working.
 ```powershell
 uv sync                                              # install deps
 copy .env.example .env                               # fill OPENAI_API_KEY, AZURE_SEARCH_KEY
-uv run python -m ingest.ingest_policies --recreate   # (re)build search index from data/policies/
-uv run python -m ingest.ingest_policies --dry-run    # print chunks only
+uv run python -m ingest.ingest_policies --recreate   # (re)build the search index, re-index admin uploads
+uv run python -m ingest.ingest_policies --builtin    # also index data/policies/ (off by default; --dry-run to preview)
 uv run python -m ingest.pipeline --pending           # resync uploads without the API (--doc-id <id> / --all to force)
 .\run_all.ps1                                        # start 3 MCP servers + API + UI in separate windows
 .\stop_all.ps1                                       # stop them all and close their windows

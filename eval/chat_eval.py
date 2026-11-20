@@ -4,7 +4,7 @@ Usage: uv run python -m eval.chat_eval [--only <id> ...] [-v]
 
 Runs the chat graph in-process (no API needed; Azure OpenAI + Azure AI Search must be configured, and the index
 must contain the built-in policies incl. the confidential data/policies/internal_claims_guidelines.md:
-`uv run python -m ingest.ingest_policies`).
+`uv run python -m ingest.ingest_policies --builtin`).
 
 Per test case (eval/chat_testset.json):
   status ok   – the status is one of expected_status (answered / partial / restricted / not_found / blocked / fallback)
